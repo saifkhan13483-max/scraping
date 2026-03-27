@@ -1,0 +1,84 @@
+Upgrade this project to use Redis as the primary job queue instead of in-memory storage.
+
+IMPORTANT:
+Do NOT rewrite the entire project. Keep the existing architecture and API routes. Only replace the storage layer and improve job handling.
+
+## Goals
+
+1. Replace in-memory Map with Redis
+2. Ensure safe multi-worker processing (no duplicate job pickup)
+3. Add job recovery if a worker crashes
+
+## Requirements
+
+### 1. Redis Setup
+
+* Use ioredis (already installed)
+* Read REDIS_URL from environment variables
+* Create a reusable Redis client
+
+### 2. Job Queue Design
+
+Use Redis data structures:
+
+* "jobs" (hash) → store job objects by ID
+* "queue:pending" (list) → pending job IDs
+* "queue:processing" (list) → jobs currently being processed
+
+### 3. Update Core Logic
+
+#### POST /api/job
+
+* Store job in Redis
+* Push job ID into "queue:pending"
+
+#### GET /api/job (critical)
+
+* Use atomic operation (RPOPLPUSH or similar)
+* Move job ID from pending → processing
+* Prevent multiple workers from receiving same job
+
+#### POST /api/result
+
+* Update job status to completed
+* Remove job from processing queue
+
+#### POST /api/fail
+
+* Update job status to failed
+* Remove job from processing queue
+
+#### POST /api/retry
+
+* Move job back to pending queue
+* Increment retryCount properly (as number)
+
+### 4. Job Timeout / Recovery (IMPORTANT)
+
+* Add a mechanism:
+
+  * If a job stays in "processing" for too long (e.g. 2 minutes)
+  * Move it back to "pending"
+* Can be implemented as:
+
+  * periodic cleanup function
+  * or timestamp check
+
+### 5. Data Format Fix
+
+* retryCount must be a number, not string
+
+### 6. Keep Existing API Structure
+
+* Do NOT break current endpoints
+* Only improve backend logic
+
+### 7. Output
+
+* Show updated storage/service code
+* Show how Redis is used in each endpoint
+* Explain what changed
+
+Do NOT modify frontend.
+Do NOT add authentication yet.
+Focus only on queue reliability and Redis integration.
