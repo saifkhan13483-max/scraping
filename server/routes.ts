@@ -16,6 +16,11 @@ function isValidUrl(url: string): boolean {
 }
 
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
+  // Health check — always returns 200. Used by Railway to confirm the server is up.
+  app.get("/api/health", (_req: Request, res: Response) => {
+    res.json({ status: "ok" });
+  });
+
   app.use(resolveUser);
 
   // ── Auth Routes ─────────────────────────────────────────────────────────────
