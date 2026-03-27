@@ -1,8 +1,9 @@
 import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { insertJobSchema, submitResultSchema, failJobSchema, retryJobSchema } from "@shared/schema";
-import { ZodError } from "zod";
+import { insertJobSchema, submitResultSchema, failJobSchema, retryJobSchema, insertUserSchema, createApiKeySchema } from "@shared/schema";
+import { ZodError, z } from "zod";
+import { requireAuth, resolveUser } from "./auth";
 
 function isValidUrl(url: string): boolean {
   try {
@@ -14,20 +15,122 @@ function isValidUrl(url: string): boolean {
 }
 
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
-  // Request logger
-  app.use((req: Request, _res: Response, next: NextFunction) => {
-    console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
-    next();
+  app.use(resolveUser);
+
+  // ── Auth Routes ─────────────────────────────────────────────────────────────
+
+  app.post("/api/auth/register", async (req: Request, res: Response) => {
+    try {
+      const parsed = insertUserSchema.parse(req.body);
+      const existing = await storage.getUserByEmail(parsed.email);
+      if (existing) {
+        return res.status(409).json({ error: "An account with this email already exists" });
+      }
+      const user = await storage.createUser(parsed);
+      req.session!.userId = user.id;
+      return res.status(201).json({ id: user.id, email: user.email, name: user.name });
+    } catch (err) {
+      if (err instanceof ZodError) {
+        return res.status(400).json({ error: err.errors[0].message });
+      }
+      throw err;
+    }
   });
 
-  // POST /api/job - add a new job
-  app.post("/api/job", async (req: Request, res: Response) => {
+  app.post("/api/auth/login", async (req: Request, res: Response) => {
+    try {
+      const { email, password } = z.object({ email: z.string().email(), password: z.string() }).parse(req.body);
+      const user = await storage.getUserByEmail(email);
+      if (!user) return res.status(401).json({ error: "Invalid email or password" });
+      const valid = await storage.validatePassword(user, password);
+      if (!valid) return res.status(401).json({ error: "Invalid email or password" });
+      req.session!.userId = user.id;
+      return res.json({ id: user.id, email: user.email, name: user.name });
+    } catch (err) {
+      if (err instanceof ZodError) {
+        return res.status(400).json({ error: err.errors[0].message });
+      }
+      throw err;
+    }
+  });
+
+  app.post("/api/auth/logout", (req: Request, res: Response) => {
+    req.session!.destroy(() => res.json({ success: true }));
+  });
+
+  app.get("/api/auth/me", requireAuth, async (req: Request, res: Response) => {
+    const user = await storage.getUserById(req.session!.userId!);
+    if (!user) return res.status(404).json({ error: "User not found" });
+    const sub = await storage.getSubscription(user.id);
+    return res.json({ id: user.id, email: user.email, name: user.name, subscription: sub });
+  });
+
+  // ── Subscription Routes ─────────────────────────────────────────────────────
+
+  app.get("/api/subscription", requireAuth, async (req: Request, res: Response) => {
+    const sub = await storage.getSubscription(req.session!.userId!);
+    return res.json(sub);
+  });
+
+  app.post("/api/subscription/upgrade", requireAuth, async (req: Request, res: Response) => {
+    try {
+      const { plan } = z.object({ plan: z.enum(["free", "pro", "business"]) }).parse(req.body);
+      const sub = await storage.updatePlan(req.session!.userId!, plan);
+      return res.json(sub);
+    } catch (err) {
+      if (err instanceof ZodError) {
+        return res.status(400).json({ error: err.errors[0].message });
+      }
+      throw err;
+    }
+  });
+
+  // ── API Key Routes ──────────────────────────────────────────────────────────
+
+  app.get("/api/keys", requireAuth, async (req: Request, res: Response) => {
+    const keys = await storage.getApiKeys(req.session!.userId!);
+    return res.json(keys.map((k) => ({ ...k, key: k.key.slice(0, 10) + "…" })));
+  });
+
+  app.post("/api/keys", requireAuth, async (req: Request, res: Response) => {
+    try {
+      const { name } = createApiKeySchema.parse(req.body);
+      const key = await storage.createApiKey(req.session!.userId!, name);
+      return res.status(201).json(key);
+    } catch (err) {
+      if (err instanceof ZodError) {
+        return res.status(400).json({ error: err.errors[0].message });
+      }
+      throw err;
+    }
+  });
+
+  app.delete("/api/keys/:id", requireAuth, async (req: Request, res: Response) => {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ error: "Invalid ID" });
+    const deleted = await storage.deleteApiKey(req.session!.userId!, id);
+    if (!deleted) return res.status(404).json({ error: "API key not found" });
+    return res.json({ success: true });
+  });
+
+  // ── Job Routes ──────────────────────────────────────────────────────────────
+
+  app.post("/api/job", requireAuth, async (req: Request, res: Response) => {
     try {
       const parsed = insertJobSchema.parse(req.body);
       if (!isValidUrl(parsed.url)) {
         return res.status(400).json({ error: "Invalid URL format" });
       }
-      const job = await storage.createJob(parsed);
+      const userId = req.session!.userId!;
+      const quota = await storage.checkQuota(userId);
+      if (!quota.allowed) {
+        return res.status(429).json({
+          error: `Job limit reached. You've used ${quota.used} of ${quota.limit} jobs this month on the ${quota.plan} plan. Please upgrade to continue.`,
+          quota,
+        });
+      }
+      const job = await storage.createJob(parsed, userId);
+      await storage.incrementJobUsage(userId);
       return res.status(201).json(job);
     } catch (err) {
       if (err instanceof ZodError) {
@@ -37,27 +140,25 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  // GET /api/job - worker fetches next pending job
+  // Worker endpoint — no auth required (workers use API keys or direct access)
   app.get("/api/job", async (_req: Request, res: Response) => {
     const job = await storage.getNextPendingJob();
     if (!job) return res.status(204).send();
     return res.json(job);
   });
 
-  // GET /api/jobs - return all jobs (for dashboard/debugging)
-  app.get("/api/jobs", async (_req: Request, res: Response) => {
-    const jobs = await storage.getAllJobs();
+  app.get("/api/jobs", requireAuth, async (req: Request, res: Response) => {
+    const jobs = await storage.getAllJobs(req.session!.userId!);
     return res.json(jobs);
   });
 
-  // GET /api/jobs/:id - return a specific job
-  app.get("/api/jobs/:id", async (req: Request, res: Response) => {
+  app.get("/api/jobs/:id", requireAuth, async (req: Request, res: Response) => {
     const job = await storage.getJobById(req.params.id);
     if (!job) return res.status(404).json({ error: "Job not found" });
+    if (job.userId !== req.session!.userId) return res.status(403).json({ error: "Forbidden" });
     return res.json(job);
   });
 
-  // POST /api/result - worker submits result
   app.post("/api/result", async (req: Request, res: Response) => {
     try {
       const parsed = submitResultSchema.parse(req.body);
@@ -72,7 +173,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  // POST /api/fail - mark job as failed
   app.post("/api/fail", async (req: Request, res: Response) => {
     try {
       const parsed = failJobSchema.parse(req.body);
@@ -87,8 +187,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  // POST /api/retry - retry a failed job
-  app.post("/api/retry", async (req: Request, res: Response) => {
+  app.post("/api/retry", requireAuth, async (req: Request, res: Response) => {
     try {
       const parsed = retryJobSchema.parse(req.body);
       const job = await storage.retryJob(parsed.id);
@@ -102,8 +201,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  // DELETE /api/jobs/:id - delete a job
-  app.delete("/api/jobs/:id", async (req: Request, res: Response) => {
+  app.delete("/api/jobs/:id", requireAuth, async (req: Request, res: Response) => {
+    const job = await storage.getJobById(req.params.id);
+    if (!job) return res.status(404).json({ error: "Job not found" });
+    if (job.userId !== req.session!.userId) return res.status(403).json({ error: "Forbidden" });
     const deleted = await storage.deleteJob(req.params.id);
     if (!deleted) return res.status(404).json({ error: "Job not found" });
     return res.json({ success: true });

@@ -5,7 +5,8 @@ import { apiRequest } from "@/lib/queryClient";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { insertJobSchema } from "@shared/schema";
-import type { Job, JobStatus, InsertJob } from "@shared/schema";
+import type { Job, JobStatus, InsertJob, Subscription } from "@shared/schema";
+import { PLAN_CONFIG } from "@shared/schema";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -15,50 +16,20 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/hooks/use-auth";
+import AppLayout from "@/components/app-layout";
+import { Link } from "wouter";
 import {
-  Globe,
-  Clock,
-  CheckCircle2,
-  XCircle,
-  Loader2,
-  RefreshCw,
-  Trash2,
-  Plus,
-  Activity,
-  Terminal,
-  ChevronRight,
-  AlertCircle,
-  Copy,
-  Filter,
-  Zap,
+  Globe, Clock, CheckCircle2, XCircle, Loader2, RefreshCw, Trash2, Plus, Activity,
+  Terminal, ChevronRight, AlertCircle, Copy, Filter, Zap,
 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 
 const STATUS_CONFIG: Record<JobStatus, { label: string; color: string; bgColor: string; icon: React.ComponentType<any> }> = {
-  pending: {
-    label: "Pending",
-    color: "text-amber-500 dark:text-amber-400",
-    bgColor: "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20",
-    icon: Clock,
-  },
-  processing: {
-    label: "Processing",
-    color: "text-primary",
-    bgColor: "bg-primary/10 text-primary border-primary/20",
-    icon: Loader2,
-  },
-  completed: {
-    label: "Completed",
-    color: "text-emerald-500 dark:text-emerald-400",
-    bgColor: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20",
-    icon: CheckCircle2,
-  },
-  failed: {
-    label: "Failed",
-    color: "text-destructive",
-    bgColor: "bg-destructive/10 text-destructive border-destructive/20",
-    icon: XCircle,
-  },
+  pending: { label: "Pending", color: "text-amber-500 dark:text-amber-400", bgColor: "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20", icon: Clock },
+  processing: { label: "Processing", color: "text-primary", bgColor: "bg-primary/10 text-primary border-primary/20", icon: Loader2 },
+  completed: { label: "Completed", color: "text-emerald-500 dark:text-emerald-400", bgColor: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20", icon: CheckCircle2 },
+  failed: { label: "Failed", color: "text-destructive", bgColor: "bg-destructive/10 text-destructive border-destructive/20", icon: XCircle },
 };
 
 function StatusBadge({ status }: { status: JobStatus }) {
@@ -94,19 +65,13 @@ function JobRow({ job, onSelect }: { job: Job; onSelect: (j: Job) => void }) {
 
   const retryMutation = useMutation({
     mutationFn: () => apiRequest("POST", "/api/retry", { id: job.id }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
-      toast({ title: "Job queued for retry" });
-    },
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/jobs"] }); toast({ title: "Job queued for retry" }); },
     onError: () => toast({ title: "Failed to retry job", variant: "destructive" }),
   });
 
   const deleteMutation = useMutation({
     mutationFn: () => apiRequest("DELETE", `/api/jobs/${job.id}`),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
-      toast({ title: "Job deleted" });
-    },
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/jobs"] }); toast({ title: "Job deleted" }); },
     onError: () => toast({ title: "Failed to delete job", variant: "destructive" }),
   });
 
@@ -121,38 +86,20 @@ function JobRow({ job, onSelect }: { job: Job; onSelect: (j: Job) => void }) {
           <Globe className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
           <span className="text-sm font-medium truncate max-w-xs" data-testid={`text-url-${job.id}`}>{job.url}</span>
           <StatusBadge status={job.status as JobStatus} />
-          {parseInt(job.retryCount) > 0 && (
-            <span className="text-xs text-muted-foreground">retry #{job.retryCount}</span>
-          )}
+          {parseInt(job.retryCount) > 0 && <span className="text-xs text-muted-foreground">retry #{job.retryCount}</span>}
         </div>
         <div className="flex items-center gap-3 mt-1">
           <span className="text-xs text-muted-foreground font-mono">{job.id.slice(0, 8)}…</span>
-          <span className="text-xs text-muted-foreground">
-            {formatDistanceToNow(new Date(job.createdAt), { addSuffix: true })}
-          </span>
+          <span className="text-xs text-muted-foreground">{formatDistanceToNow(new Date(job.createdAt), { addSuffix: true })}</span>
         </div>
       </div>
       <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity" onClick={(e) => e.stopPropagation()}>
         {job.status === "failed" && (
-          <Button
-            size="icon"
-            variant="ghost"
-            className="h-7 w-7"
-            disabled={retryMutation.isPending}
-            onClick={() => retryMutation.mutate()}
-            data-testid={`button-retry-${job.id}`}
-          >
+          <Button size="icon" variant="ghost" className="h-7 w-7" disabled={retryMutation.isPending} onClick={() => retryMutation.mutate()} data-testid={`button-retry-${job.id}`}>
             <RefreshCw className={`w-3.5 h-3.5 ${retryMutation.isPending ? "animate-spin" : ""}`} />
           </Button>
         )}
-        <Button
-          size="icon"
-          variant="ghost"
-          className="h-7 w-7 text-destructive"
-          disabled={deleteMutation.isPending}
-          onClick={() => deleteMutation.mutate()}
-          data-testid={`button-delete-${job.id}`}
-        >
+        <Button size="icon" variant="ghost" className="h-7 w-7 text-destructive" disabled={deleteMutation.isPending} onClick={() => deleteMutation.mutate()} data-testid={`button-delete-${job.id}`}>
           <Trash2 className="w-3.5 h-3.5" />
         </Button>
         <ChevronRight className="w-4 h-4 text-muted-foreground" />
@@ -164,56 +111,27 @@ function JobRow({ job, onSelect }: { job: Job; onSelect: (j: Job) => void }) {
 function JobDetailDialog({ job, open, onClose }: { job: Job | null; open: boolean; onClose: () => void }) {
   const { toast } = useToast();
   if (!job) return null;
-
   const resultStr = job.result ? JSON.stringify(job.result, null, 2) : null;
-
-  const copyToClipboard = (text: string) => {
-    navigator.clipboard.writeText(text);
-    toast({ title: "Copied to clipboard" });
-  };
+  const copyToClipboard = (text: string) => { navigator.clipboard.writeText(text); toast({ title: "Copied to clipboard" }); };
 
   return (
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
       <DialogContent className="max-w-2xl max-h-[85vh] flex flex-col gap-0 p-0">
         <DialogHeader className="px-6 py-4 border-b border-border">
-          <DialogTitle className="flex items-center gap-2">
-            <Terminal className="w-4 h-4 text-primary" />
-            Job Details
-          </DialogTitle>
+          <DialogTitle className="flex items-center gap-2"><Terminal className="w-4 h-4 text-primary" />Job Details</DialogTitle>
         </DialogHeader>
         <ScrollArea className="flex-1">
           <div className="px-6 py-4 space-y-4">
             <div className="flex items-center justify-between gap-2 flex-wrap">
               <StatusBadge status={job.status as JobStatus} />
-              {parseInt(job.retryCount) > 0 && (
-                <span className="text-xs bg-muted px-2 py-0.5 rounded text-muted-foreground">
-                  {job.retryCount} retries
-                </span>
-              )}
+              {parseInt(job.retryCount) > 0 && <span className="text-xs bg-muted px-2 py-0.5 rounded text-muted-foreground">{job.retryCount} retries</span>}
             </div>
-
             <div className="space-y-3">
-              <DetailRow label="Job ID">
-                <div className="flex items-center gap-2">
-                  <span className="font-mono text-sm">{job.id}</span>
-                  <Button size="icon" variant="ghost" className="h-6 w-6" onClick={() => copyToClipboard(job.id)}>
-                    <Copy className="w-3 h-3" />
-                  </Button>
-                </div>
-              </DetailRow>
-              <DetailRow label="URL">
-                <a href={job.url} target="_blank" rel="noopener noreferrer" className="text-primary underline text-sm break-all">{job.url}</a>
-              </DetailRow>
-              <DetailRow label="Created">
-                <span className="text-sm text-muted-foreground">
-                  {new Date(job.createdAt).toLocaleString()} ({formatDistanceToNow(new Date(job.createdAt), { addSuffix: true })})
-                </span>
-              </DetailRow>
-              <DetailRow label="Updated">
-                <span className="text-sm text-muted-foreground">{new Date(job.updatedAt).toLocaleString()}</span>
-              </DetailRow>
+              <DetailRow label="Job ID"><div className="flex items-center gap-2"><span className="font-mono text-sm">{job.id}</span><Button size="icon" variant="ghost" className="h-6 w-6" onClick={() => copyToClipboard(job.id)}><Copy className="w-3 h-3" /></Button></div></DetailRow>
+              <DetailRow label="URL"><a href={job.url} target="_blank" rel="noopener noreferrer" className="text-primary underline text-sm break-all">{job.url}</a></DetailRow>
+              <DetailRow label="Created"><span className="text-sm text-muted-foreground">{new Date(job.createdAt).toLocaleString()} ({formatDistanceToNow(new Date(job.createdAt), { addSuffix: true })})</span></DetailRow>
+              <DetailRow label="Updated"><span className="text-sm text-muted-foreground">{new Date(job.updatedAt).toLocaleString()}</span></DetailRow>
             </div>
-
             {job.error && (
               <div>
                 <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">Error</p>
@@ -223,23 +141,17 @@ function JobDetailDialog({ job, open, onClose }: { job: Job | null; open: boolea
                 </div>
               </div>
             )}
-
             {resultStr && (
               <div>
                 <div className="flex items-center justify-between mb-2">
                   <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Result</p>
-                  <Button size="sm" variant="ghost" className="h-7 gap-1 text-xs" onClick={() => copyToClipboard(resultStr)}>
-                    <Copy className="w-3 h-3" /> Copy
-                  </Button>
+                  <Button size="sm" variant="ghost" className="h-7 gap-1 text-xs" onClick={() => copyToClipboard(resultStr)}><Copy className="w-3 h-3" /> Copy</Button>
                 </div>
                 <div className="bg-muted rounded-md p-3 border border-border">
-                  <pre className="text-xs font-mono text-foreground whitespace-pre-wrap break-all overflow-auto max-h-64">
-                    {resultStr}
-                  </pre>
+                  <pre className="text-xs font-mono text-foreground whitespace-pre-wrap break-all overflow-auto max-h-64">{resultStr}</pre>
                 </div>
               </div>
             )}
-
             {!job.error && !resultStr && (
               <div className="text-center py-6 text-muted-foreground">
                 <Activity className="w-8 h-8 mx-auto mb-2 opacity-40" />
@@ -270,8 +182,41 @@ const FILTERS: { label: string; value: "all" | JobStatus }[] = [
   { label: "Failed", value: "failed" },
 ];
 
+function QuotaBanner({ sub }: { sub: Subscription }) {
+  const plan = sub.plan as keyof typeof PLAN_CONFIG;
+  const limit = PLAN_CONFIG[plan].jobLimit;
+  const used = sub.jobsUsedThisMonth;
+  const isUnlimited = limit >= 999999;
+  const pct = isUnlimited ? 0 : (used / limit) * 100;
+  const nearLimit = pct >= 80;
+
+  if (isUnlimited) return null;
+
+  return (
+    <div className={`rounded-xl border p-4 flex items-center gap-4 ${nearLimit ? "border-amber-500/30 bg-amber-500/5" : "border-border bg-card"}`}>
+      <div className="flex-1">
+        <div className="flex items-center justify-between mb-1.5">
+          <p className="text-xs font-medium text-muted-foreground">Monthly job usage</p>
+          <p className="text-xs text-muted-foreground">{used} / {limit}</p>
+        </div>
+        <div className="w-full h-1.5 rounded-full bg-muted overflow-hidden">
+          <div className={`h-full rounded-full ${pct > 85 ? "bg-destructive" : "bg-primary"}`} style={{ width: `${pct}%` }} />
+        </div>
+      </div>
+      {nearLimit && (
+        <Link href="/subscription">
+          <Button size="sm" className="gap-1.5 shrink-0" data-testid="button-upgrade-banner">
+            <Zap className="w-3.5 h-3.5" /> Upgrade
+          </Button>
+        </Link>
+      )}
+    </div>
+  );
+}
+
 export default function Dashboard() {
   const { toast } = useToast();
+  const { user } = useAuth();
   const [filter, setFilter] = useState<"all" | JobStatus>("all");
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
@@ -279,6 +224,12 @@ export default function Dashboard() {
   const { data: jobs = [], isLoading, refetch } = useQuery<Job[]>({
     queryKey: ["/api/jobs"],
     refetchInterval: 3000,
+    enabled: !!user,
+  });
+
+  const { data: sub } = useQuery<Subscription>({
+    queryKey: ["/api/subscription"],
+    enabled: !!user,
   });
 
   const form = useForm<InsertJob>({
@@ -290,10 +241,20 @@ export default function Dashboard() {
     mutationFn: (data: InsertJob) => apiRequest("POST", "/api/job", data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/subscription"] });
       form.reset();
       toast({ title: "Job created successfully" });
     },
-    onError: () => toast({ title: "Failed to create job", variant: "destructive" }),
+    onError: (err: unknown) => {
+      let message = "Failed to create job";
+      if (err instanceof Error) {
+        const match = err.message.match(/^\d+: (.+)$/);
+        if (match) {
+          try { message = JSON.parse(match[1]).error || message; } catch { message = match[1] || message; }
+        }
+      }
+      toast({ title: message, variant: "destructive" });
+    },
   });
 
   const stats = {
@@ -306,24 +267,16 @@ export default function Dashboard() {
 
   const filtered = filter === "all" ? jobs : jobs.filter((j) => j.status === filter);
 
-  const handleJobSelect = (job: Job) => {
-    setSelectedJob(job);
-    setDetailOpen(true);
-  };
-
   return (
-    <div className="min-h-screen bg-background">
-      {/* Header */}
-      <header className="border-b border-border bg-card/50 backdrop-blur-sm sticky top-0 z-10">
-        <div className="max-w-6xl mx-auto px-6 h-14 flex items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="p-1.5 rounded-lg bg-primary/10">
-              <Zap className="w-4 h-4 text-primary" />
-            </div>
-            <div>
-              <h1 className="font-semibold text-sm leading-none">Job Queue</h1>
-              <p className="text-xs text-muted-foreground mt-0.5">Browser Automation Manager</p>
-            </div>
+    <AppLayout>
+      <div className="max-w-5xl mx-auto px-6 py-6 space-y-6">
+        {/* Header row */}
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-bold">Dashboard</h1>
+            <p className="text-muted-foreground text-sm mt-0.5">
+              Welcome back{user ? `, ${user.name.split(" ")[0]}` : ""}
+            </p>
           </div>
           <div className="flex items-center gap-2">
             <div className={`flex items-center gap-1.5 text-xs ${stats.processing > 0 ? "text-primary" : "text-muted-foreground"}`}>
@@ -335,9 +288,10 @@ export default function Dashboard() {
             </Button>
           </div>
         </div>
-      </header>
 
-      <main className="max-w-6xl mx-auto px-6 py-6 space-y-6">
+        {/* Quota banner */}
+        {sub && <QuotaBanner sub={sub} />}
+
         {/* Stats */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <StatCard label="Pending" value={stats.pending} icon={Clock} colorClass="text-amber-500 dark:text-amber-400" bgClass="bg-amber-500/10" />
@@ -356,40 +310,17 @@ export default function Dashboard() {
           </CardHeader>
           <CardContent className="px-5 pb-4">
             <Form {...form}>
-              <form
-                onSubmit={form.handleSubmit((data) => createMutation.mutate(data))}
-                className="flex gap-2"
-              >
-                <FormField
-                  control={form.control}
-                  name="url"
-                  render={({ field }) => (
-                    <FormItem className="flex-1">
-                      <FormControl>
-                        <Input
-                          {...field}
-                          placeholder="https://example.com"
-                          className="font-mono text-sm"
-                          data-testid="input-url"
-                        />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-                <Button
-                  type="submit"
-                  disabled={createMutation.isPending}
-                  data-testid="button-submit-job"
-                >
-                  {createMutation.isPending ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <>
-                      <Plus className="w-4 h-4" />
-                      Submit
-                    </>
-                  )}
+              <form onSubmit={form.handleSubmit((data) => createMutation.mutate(data))} className="flex gap-2">
+                <FormField control={form.control} name="url" render={({ field }) => (
+                  <FormItem className="flex-1">
+                    <FormControl>
+                      <Input {...field} placeholder="https://example.com" className="font-mono text-sm" data-testid="input-url" />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )} />
+                <Button type="submit" disabled={createMutation.isPending} data-testid="button-submit-job">
+                  {createMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <><Plus className="w-4 h-4" />Submit</>}
                 </Button>
               </form>
             </Form>
@@ -411,19 +342,12 @@ export default function Dashboard() {
                     key={f.value}
                     onClick={() => setFilter(f.value)}
                     data-testid={`button-filter-${f.value}`}
-                    className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
-                      filter === f.value
-                        ? "bg-primary text-primary-foreground"
-                        : "text-muted-foreground hover:text-foreground hover:bg-accent"
-                    }`}
+                    className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${filter === f.value ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground hover:bg-accent"}`}
                   >
                     {f.label}
                     {f.value !== "all" && (
                       <span className="ml-1 opacity-70">
-                        {f.value === "pending" ? stats.pending
-                          : f.value === "processing" ? stats.processing
-                          : f.value === "completed" ? stats.completed
-                          : stats.failed}
+                        {f.value === "pending" ? stats.pending : f.value === "processing" ? stats.processing : f.value === "completed" ? stats.completed : stats.failed}
                       </span>
                     )}
                   </button>
@@ -434,9 +358,7 @@ export default function Dashboard() {
           <Separator className="mt-3" />
           <CardContent className="p-0">
             {isLoading ? (
-              <div className="flex items-center justify-center py-12">
-                <Loader2 className="w-6 h-6 animate-spin text-primary" />
-              </div>
+              <div className="flex items-center justify-center py-12"><Loader2 className="w-6 h-6 animate-spin text-primary" /></div>
             ) : filtered.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-14 text-muted-foreground">
                 <Activity className="w-10 h-10 mb-3 opacity-30" />
@@ -445,49 +367,13 @@ export default function Dashboard() {
               </div>
             ) : (
               <ScrollArea className="max-h-[480px]">
-                {filtered.map((job) => (
-                  <JobRow key={job.id} job={job} onSelect={handleJobSelect} />
-                ))}
+                {filtered.map((job) => <JobRow key={job.id} job={job} onSelect={(j) => { setSelectedJob(j); setDetailOpen(true); }} />)}
               </ScrollArea>
             )}
           </CardContent>
         </Card>
-
-        {/* API Reference */}
-        <Card className="border-card-border">
-          <CardHeader className="pb-3 pt-4 px-5">
-            <CardTitle className="text-sm font-semibold flex items-center gap-2">
-              <Terminal className="w-4 h-4 text-primary" />
-              API Reference
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="px-5 pb-4">
-            <div className="grid sm:grid-cols-2 gap-2">
-              {[
-                { method: "POST", path: "/api/job", desc: "Submit a new job" },
-                { method: "GET", path: "/api/job", desc: "Worker: fetch next pending job" },
-                { method: "GET", path: "/api/jobs", desc: "List all jobs" },
-                { method: "POST", path: "/api/result", desc: "Submit job result" },
-                { method: "POST", path: "/api/fail", desc: "Mark job as failed" },
-                { method: "POST", path: "/api/retry", desc: "Retry a failed job" },
-                { method: "DELETE", path: "/api/jobs/:id", desc: "Delete a job" },
-              ].map((ep) => (
-                <div key={`${ep.method}-${ep.path}`} className="flex items-center gap-2 py-1.5 px-3 rounded-md bg-muted/50 border border-border">
-                  <span className={`text-xs font-bold font-mono w-12 ${
-                    ep.method === "GET" ? "text-emerald-500 dark:text-emerald-400"
-                    : ep.method === "DELETE" ? "text-destructive"
-                    : "text-primary"
-                  }`}>{ep.method}</span>
-                  <span className="text-xs font-mono text-foreground">{ep.path}</span>
-                  <span className="text-xs text-muted-foreground ml-auto hidden sm:block">{ep.desc}</span>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-      </main>
-
+      </div>
       <JobDetailDialog job={selectedJob} open={detailOpen} onClose={() => setDetailOpen(false)} />
-    </div>
+    </AppLayout>
   );
 }
