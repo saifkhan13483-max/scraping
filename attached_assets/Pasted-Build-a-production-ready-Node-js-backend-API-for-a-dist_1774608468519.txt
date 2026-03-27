@@ -1,0 +1,97 @@
+Build a production-ready Node.js backend API for a distributed browser automation system where:
+
+* The backend is deployed on Railway
+* Browser automation (Playwright) runs on a local machine (worker)
+* The backend manages job queues and receives results
+
+## Tech Requirements
+
+* Node.js (v18+)
+* Express.js
+* Use ES Modules (import/export)
+* Use dotenv for environment variables
+* Enable CORS
+* Use clean folder structure (routes, controllers, services)
+
+## Core Features
+
+### 1. Job Queue System (in-memory for now)
+
+* Maintain a queue array of jobs
+* Each job contains:
+
+  * id (uuid)
+  * url (string)
+  * status ("pending", "processing", "completed", "failed")
+  * result (optional)
+  * createdAt
+
+### 2. API Endpoints
+
+#### POST /job
+
+* Add a new job
+* Body: { "url": "https://example.com" }
+* Validate URL
+* Return created job
+
+#### GET /job
+
+* Worker fetches next job
+* Return one job with status "pending"
+* Mark it as "processing"
+
+#### POST /result
+
+* Worker submits result
+* Body: { "id": string, "data": any }
+* Update job status to "completed"
+
+#### POST /fail
+
+* Mark job as failed
+* Body: { "id": string, "error": string }
+
+#### GET /jobs
+
+* Return all jobs (for debugging)
+
+### 3. Logging
+
+* Log all incoming requests
+* Log job lifecycle (created → processing → completed/failed)
+
+### 4. Error Handling
+
+* Centralized error handler middleware
+* Return proper HTTP status codes
+
+### 5. Project Structure
+
+* /src
+
+  * /routes
+  * /controllers
+  * /services
+  * /middlewares
+  * app.js
+  * server.js
+
+### 6. Railway Ready
+
+* App must run on process.env.PORT
+* Add start script in package.json
+* No hardcoded ports
+
+### 7. Bonus (if possible)
+
+* Add simple retry mechanism for failed jobs
+* Add basic rate limiting middleware
+
+## Output Requirements
+
+* Provide full working code (multiple files)
+* Include package.json
+* Include instructions to run locally and deploy to Railway
+
+The code should be clean, modular, and production-ready (not a single-file script).
