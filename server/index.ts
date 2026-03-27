@@ -32,7 +32,6 @@ app.use(
 
 app.use(express.urlencoded({ extended: false }));
 
-// Session setup
 const PgSession = connectPgSimple(session);
 const sessionPool = new Pool({ connectionString: process.env.DATABASE_URL });
 
@@ -49,6 +48,7 @@ app.use(
       maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
     },
   }),
 );
@@ -88,9 +88,21 @@ app.use((req, res, next) => {
   next();
 });
 
-(async () => {
+// Initialize all async setup once — shared across hot reloads and Vercel invocations
+const initPromise = (async () => {
   await registerRoutes(httpServer, app);
-  await startRecoveryWatchdog();
+
+  if (process.env.NODE_ENV === "production") {
+    // Fire-and-forget — watchdog won't persist in serverless but runs on warm instances
+    startRecoveryWatchdog().catch((err) =>
+      console.error("[WATCHDOG] Failed to start:", err),
+    );
+    serveStatic(app);
+  } else {
+    await startRecoveryWatchdog();
+    const { setupVite } = await import("./vite");
+    await setupVite(httpServer, app);
+  }
 
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
@@ -100,16 +112,18 @@ app.use((req, res, next) => {
     return res.status(status).json({ message });
   });
 
-  if (process.env.NODE_ENV === "production") {
-    serveStatic(app);
-  } else {
-    const { setupVite } = await import("./vite");
-    await setupVite(httpServer, app);
+  // Start HTTP server only when NOT running as a Vercel serverless function
+  if (!process.env.VERCEL) {
+    const port = parseInt(process.env.PORT || "5000", 10);
+    httpServer.listen(
+      { port, host: "0.0.0.0", reusePort: true },
+      () => { log(`serving on port ${port}`); },
+    );
   }
-
-  const port = parseInt(process.env.PORT || "5000", 10);
-  httpServer.listen(
-    { port, host: "0.0.0.0", reusePort: true },
-    () => { log(`serving on port ${port}`); },
-  );
 })();
+
+// Default export used by Vercel's @vercel/node serverless handler
+export default async (req: any, res: any) => {
+  await initPromise;
+  app(req, res);
+};

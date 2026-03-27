@@ -119,6 +119,21 @@ npm run dev
 
 The app starts on port 5000. Requires `REDIS_URL` and `DATABASE_URL` environment variables.
 
+## Vercel Deployment
+
+The app is configured for Vercel via `vercel.json`. Key setup:
+- `npm run build` compiles the React frontend to `dist/public/` and bundles the Express server to `dist/index.cjs`
+- `@vercel/node` serves `dist/index.cjs` as a serverless function
+- All routes are proxied to the serverless Express handler
+- `server/index.ts` exports an async default handler for Vercel; the HTTP server only starts when `VERCEL` env var is not set
+- Static files are bundled into the function via `includeFiles: ["dist/public/**"]`
+
+Required environment variables in Vercel:
+- `DATABASE_URL` — PostgreSQL connection string
+- `REDIS_URL` — Redis URL (e.g. `rediss://...@upstash.io:6379`)
+- `SESSION_SECRET` — Secret for session signing (use a long random string in production)
+- `NODE_ENV=production`
+
 ## Worker Integration
 
 Workers authenticate via the `x-api-key` header:
