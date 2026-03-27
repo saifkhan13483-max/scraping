@@ -1,6 +1,7 @@
 import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
+import { scrapeUrl } from "./scraper";
 import { insertJobSchema, submitResultSchema, failJobSchema, retryJobSchema, insertUserSchema, createApiKeySchema } from "@shared/schema";
 import { ZodError, z } from "zod";
 import { requireAuth, resolveUser } from "./auth";
@@ -138,6 +139,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
       const job = await storage.createJob(parsed, userId);
       await storage.incrementJobUsage(userId);
+
+      // Fire-and-forget: trigger server-side processing so jobs run on Vercel
+      // without needing an external worker process.
+      const host = req.get("host") || "localhost:5000";
+      const protocol = req.secure || req.headers["x-forwarded-proto"] === "https" ? "https" : "http";
+      fetch(`${protocol}://${host}/api/jobs/process`, { method: "POST" }).catch((e) =>
+        console.warn("[AUTO-PROCESS] Could not trigger processing:", e.message)
+      );
+
       return res.status(201).json(job);
     } catch (err) {
       if (err instanceof ZodError) {
@@ -147,11 +157,31 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  // Worker endpoint — no auth required (workers use API keys or direct access)
+  // Worker endpoint — no auth required (external Playwright workers use this)
   app.get("/api/job", async (_req: Request, res: Response) => {
     const job = await storage.getNextPendingJob();
     if (!job) return res.status(204).send();
     return res.json(job);
+  });
+
+  // Server-side job processor — picks up one pending job and scrapes it in-process.
+  // Called automatically after job creation (fire-and-forget) so jobs work on Vercel
+  // without requiring an external Playwright worker.
+  app.post("/api/jobs/process", async (_req: Request, res: Response) => {
+    const job = await storage.getNextPendingJob();
+    if (!job) return res.status(204).send();
+
+    try {
+      const result = await scrapeUrl(job.url);
+      await storage.completeJob(job.id, result);
+      console.log(`[PROCESS] Completed job ${job.id} — "${result.title}"`);
+      return res.json({ success: true, jobId: job.id });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unknown scrape error";
+      await storage.failJob(job.id, message);
+      console.error(`[PROCESS] Failed job ${job.id}: ${message}`);
+      return res.json({ success: false, jobId: job.id, error: message });
+    }
   });
 
   app.get("/api/jobs", requireAuth, async (req: Request, res: Response) => {

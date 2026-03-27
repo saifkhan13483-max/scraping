@@ -131,8 +131,11 @@ if (rawUrl) {
     exists: async (key: string) => {
       return store.has(key) ? 1 : 0;
     },
-    scan: async (_cursor: string, _match: string, _pattern: string, _count: string, _num: number) => {
-      const keys = Array.from(store.keys());
+    scan: async (_cursor: string, _matchKeyword: string, pattern: string, _countKeyword: string, _num: number) => {
+      // Convert Redis glob pattern (e.g. "job:*") to a JS regex
+      const regexStr = "^" + pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".") + "$";
+      const regex = new RegExp(regexStr);
+      const keys = Array.from(store.keys()).filter((k) => regex.test(k));
       return ["0", keys];
     },
     on: (_event: string, _handler: (...args: any[]) => void) => {},

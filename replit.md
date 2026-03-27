@@ -27,11 +27,24 @@ A full-stack SaaS browser automation job queue system with multi-user authentica
 - Real-time quota meter on the dashboard
 
 ### Job Queue
-- Submit URLs for browser automation
+- Submit URLs for scraping — no browser or Playwright required
+- Server-side HTTP scraper (`server/scraper.ts`) runs directly inside Express, fully compatible with Vercel serverless functions
+- Jobs are auto-triggered after creation via fire-and-forget `POST /api/jobs/process` — no external worker needed
 - Per-user job isolation — users only see their own jobs
 - Job states: `pending → processing → completed / failed`
 - Auto-refreshing dashboard (every 3 seconds)
 - Job retry, delete, and detail view
+
+### What the scraper extracts
+- Page title, meta description, keywords (+ Open Graph / Twitter variants)
+- Top 5 headings (h1–h3)
+- 500-character text snippet (scripts/styles stripped)
+- Up to 50 links with anchor text
+- Up to 10 image URLs
+- Favicon URL
+- Final resolved URL (after redirects)
+- HTTP status code + load time (ms)
+- Timestamp
 
 ## Pages
 
@@ -69,12 +82,13 @@ A full-stack SaaS browser automation job queue system with multi-user authentica
 ### Jobs (require auth via session or x-api-key header)
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | /api/job | Submit a new job (quota enforced) |
-| GET | /api/job | Worker: fetch next pending job |
+| POST | /api/job | Submit a new job (quota enforced; auto-triggers processing) |
+| GET | /api/job | Worker: fetch next pending job (legacy/external workers) |
+| POST | /api/jobs/process | In-server scraper: pick up and process one pending job |
 | GET | /api/jobs | List user's jobs |
 | GET | /api/jobs/:id | Get a specific job |
-| POST | /api/result | Worker submits result |
-| POST | /api/fail | Mark job as failed |
+| POST | /api/result | External worker: submit result |
+| POST | /api/fail | External worker: mark job as failed |
 | POST | /api/retry | Retry a failed job |
 | DELETE | /api/jobs/:id | Delete a job |
 
@@ -85,9 +99,10 @@ server/
   index.ts       - Express server entry point (session middleware)
   routes.ts      - All API route handlers
   storage.ts     - Redis (jobs) + PostgreSQL (users/subscriptions/keys)
+  scraper.ts     - HTTP-based HTML scraper (no Playwright, Vercel-compatible)
   db.ts          - Drizzle PostgreSQL connection
   auth.ts        - Auth middleware (requireAuth, resolveUser)
-  redis.ts       - Redis client
+  redis.ts       - Redis client with in-memory fallback
   vite.ts        - Vite dev server integration
 shared/
   schema.ts      - DB schemas, Zod schemas, TypeScript types, plan config
@@ -137,11 +152,18 @@ Required environment variables in Vercel:
 - `SESSION_SECRET` — Secret for session signing (use a long random string in production)
 - `NODE_ENV=production`
 
-## Worker Integration
+## Job Processing Architecture
 
-Workers authenticate via the `x-api-key` header:
+### In-Server (default, Vercel-compatible)
+Jobs are processed in-server without any external worker:
+1. User submits a URL via `POST /api/job`
+2. Server creates a job record in Redis with status `pending`
+3. Server fires a background `POST /api/jobs/process` (fire-and-forget)
+4. The process endpoint calls `storage.getNextPendingJob()`, runs `scrapeUrl()`, and calls `storage.completeJob()` or `storage.failJob()`
 
+### External Workers (optional, legacy)
+Workers can also integrate via the `x-api-key` header:
 1. `GET /api/job` — poll for next pending job (returns 204 if none)
-2. Process the job with a Playwright browser
+2. Process the job externally (e.g. Playwright)
 3. `POST /api/result` with `{ id, data }` on success
 4. `POST /api/fail` with `{ id, error }` on failure
