@@ -1,0 +1,14 @@
+{
+  "name": "browser-automation-worker",
+  "version": "1.0.0",
+  "description": "Playwright worker that polls the job queue API and processes URLs",
+  "type": "module",
+  "scripts": {
+    "start": "node worker.js",
+    "install-browsers": "npx playwright install chromium"
+  },
+  "dependencies": {
+    "axios": "^1.7.9",
+    "playwright": "^1.50.0"
+  }
+}
