@@ -18,7 +18,9 @@ export function useAuth() {
     retry: false,
     staleTime: 5 * 60 * 1000,
     queryFn: async () => {
-      const res = await fetch("/api/auth/me");
+      const res = await fetch("/api/auth/me", {
+        credentials: "include",
+      });
       if (res.status === 401) return null;
       if (!res.ok) throw new Error("Failed to fetch user");
       return res.json();
