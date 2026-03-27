@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useAuth } from "@/hooks/use-auth";
@@ -41,8 +42,13 @@ export default function SubscriptionPage() {
     enabled: !!user,
   });
 
+  const [pendingPlan, setPendingPlan] = useState<PlanType | null>(null);
+
   const upgradeMutation = useMutation({
-    mutationFn: (plan: PlanType) => apiRequest("POST", "/api/subscription/upgrade", { plan }),
+    mutationFn: (plan: PlanType) => {
+      setPendingPlan(plan);
+      return apiRequest("POST", "/api/subscription/upgrade", { plan });
+    },
     onSuccess: async (res) => {
       const updated = await res.json();
       queryClient.setQueryData(["/api/subscription"], updated);
@@ -50,6 +56,7 @@ export default function SubscriptionPage() {
       toast({ title: "Plan updated successfully" });
     },
     onError: () => toast({ title: "Failed to update plan", variant: "destructive" }),
+    onSettled: () => setPendingPlan(null),
   });
 
   const currentPlan = (sub?.plan ?? "free") as PlanType;
@@ -138,7 +145,7 @@ export default function SubscriptionPage() {
                     onClick={() => upgradeMutation.mutate(planKey)}
                     data-testid={`button-select-plan-${planKey}`}
                   >
-                    {upgradeMutation.isPending && !isCurrent ? (
+                    {pendingPlan === planKey ? (
                       <Loader2 className="w-3.5 h-3.5 animate-spin" />
                     ) : isCurrent ? (
                       "Current plan"

@@ -280,9 +280,9 @@ async function main() {
   console.log("  Press Ctrl+C to stop");
   console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-  // Quick connectivity check
+  // Quick connectivity check (uses the public /api/job endpoint — no auth required)
   try {
-    await api.get("/api/jobs");
+    await api.get("/api/job", { validateStatus: (s) => s === 200 || s === 204 });
     log("ok", `Connected to API at ${BASE_URL}`);
   } catch (err) {
     log("error", `Cannot reach API at ${BASE_URL} — is the server running?`);

@@ -104,6 +104,13 @@ client/
     index.css                     - Tailwind + CSS variables
 ```
 
+## Security Notes
+
+- Emails are normalized (lowercased + trimmed) on both registration and login, ensuring consistent lookups
+- API key authentication sets a request-scoped `resolvedUserId` without modifying the session, preventing unnecessary session persistence
+- Job ownership is verified on all mutating operations (retry, delete) — users can only modify their own jobs
+- URL format is validated both client-side (Zod schema) and server-side before job creation
+
 ## Running Locally
 
 ```bash

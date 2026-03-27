@@ -251,8 +251,8 @@ export class AppStorage implements IStorage {
   async createUser(data: InsertUser): Promise<User> {
     const passwordHash = await bcrypt.hash(data.password, 12);
     const [user] = await db.insert(users).values({
-      email: data.email,
-      name: data.name,
+      email: data.email.toLowerCase().trim(),
+      name: data.name.trim(),
       passwordHash,
     }).returning();
 
@@ -271,7 +271,7 @@ export class AppStorage implements IStorage {
   }
 
   async getUserByEmail(email: string): Promise<User | undefined> {
-    const [user] = await db.select().from(users).where(eq(users.email, email.toLowerCase()));
+    const [user] = await db.select().from(users).where(eq(users.email, email.toLowerCase().trim()));
     return user;
   }
 

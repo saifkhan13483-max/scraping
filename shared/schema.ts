@@ -16,7 +16,9 @@ export const jobs = pgTable("jobs", {
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
-export const insertJobSchema = createInsertSchema(jobs).pick({ url: true });
+export const insertJobSchema = createInsertSchema(jobs).pick({ url: true }).extend({
+  url: z.string().url("Please enter a valid URL (e.g. https://example.com)"),
+});
 export const submitResultSchema = z.object({ id: z.string(), data: z.any() });
 export const failJobSchema = z.object({ id: z.string(), error: z.string() });
 export const retryJobSchema = z.object({ id: z.string() });

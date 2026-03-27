@@ -28,6 +28,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
       const user = await storage.createUser(parsed);
       req.session!.userId = user.id;
+      req.resolvedUserId = user.id;
       return res.status(201).json({ id: user.id, email: user.email, name: user.name });
     } catch (err) {
       if (err instanceof ZodError) {
@@ -45,6 +46,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const valid = await storage.validatePassword(user, password);
       if (!valid) return res.status(401).json({ error: "Invalid email or password" });
       req.session!.userId = user.id;
+      req.resolvedUserId = user.id;
       return res.json({ id: user.id, email: user.email, name: user.name });
     } catch (err) {
       if (err instanceof ZodError) {
@@ -59,7 +61,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   app.get("/api/auth/me", requireAuth, async (req: Request, res: Response) => {
-    const user = await storage.getUserById(req.session!.userId!);
+    const userId = req.resolvedUserId!;
+    const user = await storage.getUserById(userId);
     if (!user) return res.status(404).json({ error: "User not found" });
     const sub = await storage.getSubscription(user.id);
     return res.json({ id: user.id, email: user.email, name: user.name, subscription: sub });
@@ -68,14 +71,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // ── Subscription Routes ─────────────────────────────────────────────────────
 
   app.get("/api/subscription", requireAuth, async (req: Request, res: Response) => {
-    const sub = await storage.getSubscription(req.session!.userId!);
+    const sub = await storage.getSubscription(req.resolvedUserId!);
     return res.json(sub);
   });
 
   app.post("/api/subscription/upgrade", requireAuth, async (req: Request, res: Response) => {
     try {
       const { plan } = z.object({ plan: z.enum(["free", "pro", "business"]) }).parse(req.body);
-      const sub = await storage.updatePlan(req.session!.userId!, plan);
+      const sub = await storage.updatePlan(req.resolvedUserId!, plan);
       return res.json(sub);
     } catch (err) {
       if (err instanceof ZodError) {
@@ -88,14 +91,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // ── API Key Routes ──────────────────────────────────────────────────────────
 
   app.get("/api/keys", requireAuth, async (req: Request, res: Response) => {
-    const keys = await storage.getApiKeys(req.session!.userId!);
+    const keys = await storage.getApiKeys(req.resolvedUserId!);
     return res.json(keys.map((k) => ({ ...k, key: k.key.slice(0, 10) + "…" })));
   });
 
   app.post("/api/keys", requireAuth, async (req: Request, res: Response) => {
     try {
       const { name } = createApiKeySchema.parse(req.body);
-      const key = await storage.createApiKey(req.session!.userId!, name);
+      const key = await storage.createApiKey(req.resolvedUserId!, name);
       return res.status(201).json(key);
     } catch (err) {
       if (err instanceof ZodError) {
@@ -108,7 +111,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.delete("/api/keys/:id", requireAuth, async (req: Request, res: Response) => {
     const id = parseInt(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: "Invalid ID" });
-    const deleted = await storage.deleteApiKey(req.session!.userId!, id);
+    const deleted = await storage.deleteApiKey(req.resolvedUserId!, id);
     if (!deleted) return res.status(404).json({ error: "API key not found" });
     return res.json({ success: true });
   });
@@ -121,7 +124,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!isValidUrl(parsed.url)) {
         return res.status(400).json({ error: "Invalid URL format" });
       }
-      const userId = req.session!.userId!;
+      const userId = req.resolvedUserId!;
       const quota = await storage.checkQuota(userId);
       if (!quota.allowed) {
         return res.status(429).json({
@@ -148,14 +151,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   app.get("/api/jobs", requireAuth, async (req: Request, res: Response) => {
-    const jobs = await storage.getAllJobs(req.session!.userId!);
+    const jobs = await storage.getAllJobs(req.resolvedUserId!);
     return res.json(jobs);
   });
 
   app.get("/api/jobs/:id", requireAuth, async (req: Request, res: Response) => {
     const job = await storage.getJobById(req.params.id);
     if (!job) return res.status(404).json({ error: "Job not found" });
-    if (job.userId !== req.session!.userId) return res.status(403).json({ error: "Forbidden" });
+    if (job.userId !== req.resolvedUserId) return res.status(403).json({ error: "Forbidden" });
     return res.json(job);
   });
 
@@ -190,6 +193,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/retry", requireAuth, async (req: Request, res: Response) => {
     try {
       const parsed = retryJobSchema.parse(req.body);
+      const existing = await storage.getJobById(parsed.id);
+      if (!existing) return res.status(404).json({ error: "Job not found" });
+      if (existing.userId !== req.resolvedUserId) return res.status(403).json({ error: "Forbidden" });
       const job = await storage.retryJob(parsed.id);
       if (!job) return res.status(404).json({ error: "Job not found or not in failed state" });
       return res.json(job);
@@ -204,7 +210,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.delete("/api/jobs/:id", requireAuth, async (req: Request, res: Response) => {
     const job = await storage.getJobById(req.params.id);
     if (!job) return res.status(404).json({ error: "Job not found" });
-    if (job.userId !== req.session!.userId) return res.status(403).json({ error: "Forbidden" });
+    if (job.userId !== req.resolvedUserId) return res.status(403).json({ error: "Forbidden" });
     const deleted = await storage.deleteJob(req.params.id);
     if (!deleted) return res.status(404).json({ error: "Job not found" });
     return res.json({ success: true });
