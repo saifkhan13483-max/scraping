@@ -98,6 +98,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/keys", requireAuth, async (req: Request, res: Response) => {
     try {
       const { name } = createApiKeySchema.parse(req.body);
+      const sub = await storage.getSubscription(req.resolvedUserId!);
+      if (!sub || sub.plan === "free") {
+        return res.status(403).json({ error: "API key access requires a Pro or Business plan. Please upgrade to create API keys." });
+      }
       const key = await storage.createApiKey(req.resolvedUserId!, name);
       return res.status(201).json(key);
     } catch (err) {
@@ -109,7 +113,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   app.delete("/api/keys/:id", requireAuth, async (req: Request, res: Response) => {
-    const id = parseInt(req.params.id);
+    const id = parseInt(req.params.id as string);
     if (isNaN(id)) return res.status(400).json({ error: "Invalid ID" });
     const deleted = await storage.deleteApiKey(req.resolvedUserId!, id);
     if (!deleted) return res.status(404).json({ error: "API key not found" });
@@ -156,7 +160,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   app.get("/api/jobs/:id", requireAuth, async (req: Request, res: Response) => {
-    const job = await storage.getJobById(req.params.id);
+    const job = await storage.getJobById(req.params.id as string);
     if (!job) return res.status(404).json({ error: "Job not found" });
     if (job.userId !== req.resolvedUserId) return res.status(403).json({ error: "Forbidden" });
     return res.json(job);
@@ -208,10 +212,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   app.delete("/api/jobs/:id", requireAuth, async (req: Request, res: Response) => {
-    const job = await storage.getJobById(req.params.id);
+    const jobId = req.params.id as string;
+    const job = await storage.getJobById(jobId);
     if (!job) return res.status(404).json({ error: "Job not found" });
     if (job.userId !== req.resolvedUserId) return res.status(403).json({ error: "Forbidden" });
-    const deleted = await storage.deleteJob(req.params.id);
+    const deleted = await storage.deleteJob(jobId);
     if (!deleted) return res.status(404).json({ error: "Job not found" });
     return res.json({ success: true });
   });

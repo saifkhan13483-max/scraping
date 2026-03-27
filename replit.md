@@ -110,6 +110,9 @@ client/
 - API key authentication sets a request-scoped `resolvedUserId` without modifying the session, preventing unnecessary session persistence
 - Job ownership is verified on all mutating operations (retry, delete) — users can only modify their own jobs
 - URL format is validated both client-side (Zod schema) and server-side before job creation
+- API key creation is restricted to Pro and Business plans — enforced on both frontend and backend
+- `createUser` wraps user + subscription creation in a single PostgreSQL transaction to prevent orphan records
+- `incrementJobUsage` uses an atomic SQL increment (`col + 1`) instead of read-modify-write to prevent race conditions under concurrent load
 
 ## Running Locally
 

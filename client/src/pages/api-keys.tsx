@@ -7,10 +7,12 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
-import { Key, Plus, Trash2, Copy, Loader2, AlertCircle, Eye, EyeOff } from "lucide-react";
+import { Key, Plus, Trash2, Copy, Loader2, AlertCircle, Eye, EyeOff, Zap } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
-import type { ApiKey } from "@shared/schema";
+import type { ApiKey, Subscription } from "@shared/schema";
+import { PLAN_CONFIG } from "@shared/schema";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Link } from "wouter";
 
 function NewKeyDialog({ open, onClose, onCreated }: { open: boolean; onClose: () => void; onCreated: (key: ApiKey & { key: string }) => void }) {
   const [name, setName] = useState("");
@@ -109,19 +111,35 @@ export default function ApiKeysPage() {
   const { toast } = useToast();
   const [createOpen, setCreateOpen] = useState(false);
   const [revealKey, setRevealKey] = useState<(ApiKey & { key: string }) | null>(null);
+  const [deletingIds, setDeletingIds] = useState<Set<number>>(new Set());
 
   const { data: keys = [], isLoading } = useQuery<ApiKey[]>({
     queryKey: ["/api/keys"],
     enabled: !!user,
   });
 
+  const { data: sub } = useQuery<Subscription>({
+    queryKey: ["/api/subscription"],
+    enabled: !!user,
+  });
+
+  const currentPlan = (sub?.plan ?? "free") as keyof typeof PLAN_CONFIG;
+  const canCreateKeys = currentPlan !== "free";
+
   const deleteMutation = useMutation({
-    mutationFn: (id: number) => apiRequest("DELETE", `/api/keys/${id}`),
-    onSuccess: () => {
+    mutationFn: (id: number) => {
+      setDeletingIds((prev) => new Set(prev).add(id));
+      return apiRequest("DELETE", `/api/keys/${id}`);
+    },
+    onSuccess: (_res, id) => {
+      setDeletingIds((prev) => { const next = new Set(prev); next.delete(id); return next; });
       queryClient.invalidateQueries({ queryKey: ["/api/keys"] });
       toast({ title: "API key deleted" });
     },
-    onError: () => toast({ title: "Failed to delete API key", variant: "destructive" }),
+    onError: (_err, id) => {
+      setDeletingIds((prev) => { const next = new Set(prev); next.delete(id); return next; });
+      toast({ title: "Failed to delete API key", variant: "destructive" });
+    },
   });
 
   return (
@@ -132,11 +150,31 @@ export default function ApiKeysPage() {
             <h1 className="text-2xl font-bold">API Keys</h1>
             <p className="text-muted-foreground mt-1">Authenticate your workers and external integrations</p>
           </div>
-          <Button className="gap-2 shrink-0" onClick={() => setCreateOpen(true)} data-testid="button-new-key">
+          <Button
+            className="gap-2 shrink-0"
+            onClick={() => canCreateKeys ? setCreateOpen(true) : null}
+            disabled={!canCreateKeys}
+            data-testid="button-new-key"
+          >
             <Plus className="w-4 h-4" />
             New key
           </Button>
         </div>
+
+        {!canCreateKeys && (
+          <div className="flex items-start gap-3 rounded-xl border border-amber-500/30 bg-amber-500/5 p-4">
+            <AlertCircle className="w-4 h-4 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
+            <div className="flex-1">
+              <p className="text-sm font-medium text-amber-700 dark:text-amber-300">API key access requires Pro or Business</p>
+              <p className="text-xs text-amber-600/80 dark:text-amber-400/70 mt-0.5">Upgrade your plan to create API keys for your workers and integrations.</p>
+            </div>
+            <Link href="/subscription">
+              <Button size="sm" className="gap-1.5 shrink-0" data-testid="button-upgrade-api-keys">
+                <Zap className="w-3.5 h-3.5" /> Upgrade
+              </Button>
+            </Link>
+          </div>
+        )}
 
         <Card className="border-card-border">
           <CardHeader className="pb-3 pt-4 px-5">
@@ -154,7 +192,9 @@ export default function ApiKeysPage() {
               <div className="text-center py-14 text-muted-foreground">
                 <Key className="w-10 h-10 mx-auto mb-3 opacity-30" />
                 <p className="font-medium text-sm">No API keys yet</p>
-                <p className="text-xs mt-1 opacity-70">Create a key to authenticate workers and external tools</p>
+                <p className="text-xs mt-1 opacity-70">
+                  {canCreateKeys ? "Create a key to authenticate workers and external tools" : "Upgrade your plan to create API keys"}
+                </p>
               </div>
             ) : (
               <div className="divide-y divide-border">
@@ -174,11 +214,11 @@ export default function ApiKeysPage() {
                       size="icon"
                       variant="ghost"
                       className="h-7 w-7 text-destructive"
-                      disabled={deleteMutation.isPending}
+                      disabled={deletingIds.has(k.id)}
                       onClick={() => deleteMutation.mutate(k.id)}
                       data-testid={`button-delete-key-${k.id}`}
                     >
-                      <Trash2 className="w-3.5 h-3.5" />
+                      {deletingIds.has(k.id) ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
                     </Button>
                   </div>
                 ))}

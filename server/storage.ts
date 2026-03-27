@@ -2,7 +2,7 @@ import { type Job, type InsertJob, type User, type InsertUser, type Subscription
 import { randomUUID, randomBytes } from "crypto";
 import { redis, KEYS } from "./redis";
 import { db } from "./db";
-import { eq, and } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 
 // How long (ms) a job can stay "processing" before being considered stuck
@@ -62,7 +62,7 @@ function deserializeJob(hash: Record<string, string>): Job {
     status: hash.status as Job["status"],
     result: hash.result ? JSON.parse(hash.result) : null,
     error: hash.error || null,
-    retryCount: parseInt(hash.retryCount ?? "0", 10) as unknown as string,
+    retryCount: String(parseInt(hash.retryCount ?? "0", 10)),
     userId: hash.userId ? parseInt(hash.userId, 10) : null,
     createdAt: new Date(hash.createdAt),
     updatedAt: new Date(hash.updatedAt),
@@ -250,20 +250,24 @@ export class AppStorage implements IStorage {
 
   async createUser(data: InsertUser): Promise<User> {
     const passwordHash = await bcrypt.hash(data.password, 12);
-    const [user] = await db.insert(users).values({
-      email: data.email.toLowerCase().trim(),
-      name: data.name.trim(),
-      passwordHash,
-    }).returning();
-
-    // Create default free subscription
     const resetAt = new Date();
     resetAt.setMonth(resetAt.getMonth() + 1);
-    await db.insert(subscriptions).values({
-      userId: user.id,
-      plan: "free",
-      jobsUsedThisMonth: 0,
-      resetAt,
+
+    const user = await db.transaction(async (tx) => {
+      const [newUser] = await tx.insert(users).values({
+        email: data.email.toLowerCase().trim(),
+        name: data.name.trim(),
+        passwordHash,
+      }).returning();
+
+      await tx.insert(subscriptions).values({
+        userId: newUser.id,
+        plan: "free",
+        jobsUsedThisMonth: 0,
+        resetAt,
+      });
+
+      return newUser;
     });
 
     console.log(`[USER CREATED] id=${user.id} email=${user.email}`);
@@ -307,10 +311,8 @@ export class AppStorage implements IStorage {
   }
 
   async incrementJobUsage(userId: number): Promise<Subscription | undefined> {
-    const sub = await this.getSubscription(userId);
-    if (!sub) return undefined;
     const [updated] = await db.update(subscriptions)
-      .set({ jobsUsedThisMonth: sub.jobsUsedThisMonth + 1 })
+      .set({ jobsUsedThisMonth: sql`${subscriptions.jobsUsedThisMonth} + 1` })
       .where(eq(subscriptions.userId, userId))
       .returning();
     return updated;

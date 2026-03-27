@@ -132,7 +132,7 @@ if (rawUrl) {
       return store.has(key) ? 1 : 0;
     },
     scan: async (_cursor: string, _match: string, _pattern: string, _count: string, _num: number) => {
-      const keys = [...store.keys()];
+      const keys = Array.from(store.keys());
       return ["0", keys];
     },
     on: (_event: string, _handler: (...args: any[]) => void) => {},
