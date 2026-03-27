@@ -137,20 +137,50 @@ npm run dev
 
 The app starts on port 5000. Requires `REDIS_URL` and `DATABASE_URL` environment variables.
 
-## Vercel Deployment
+## Split Deployment: Vercel (frontend) + Railway (backend)
 
-The app is configured for Vercel via `vercel.json`. Key setup:
-- `npm run build` compiles the React frontend to `dist/public/` and bundles the Express server to `dist/index.cjs`
-- `@vercel/node` serves `dist/index.cjs` as a serverless function
-- All routes are proxied to the serverless Express handler
-- `server/index.ts` exports an async default handler for Vercel; the HTTP server only starts when `VERCEL` env var is not set
-- Static files are bundled into the function via `includeFiles: ["dist/public/**"]`
+The project is configured for a split deployment where the React frontend runs on Vercel as a static site and the Express backend runs on Railway as a persistent Node.js server.
 
-Required environment variables in Vercel:
-- `DATABASE_URL` — PostgreSQL connection string
-- `REDIS_URL` — Redis URL (e.g. `rediss://...@upstash.io:6379`)
-- `SESSION_SECRET` — Secret for session signing (use a long random string in production)
-- `NODE_ENV=production`
+### Frontend → Vercel
+
+`vercel.json` configures a pure static site deployment:
+- Build command: `npx vite build` (builds only the React/Vite frontend)
+- Output directory: `dist/public/`
+- All routes rewrite to `index.html` for SPA navigation
+
+**Environment variables to set in Vercel:**
+| Variable | Value |
+|----------|-------|
+| `VITE_API_URL` | Your Railway backend URL (e.g. `https://scrapercloud.up.railway.app`) |
+
+### Backend → Railway
+
+`railway.toml` configures the Railway deployment:
+- Build command: `npm run build` (builds frontend + backend bundles)
+- Start command: `npm start` (`node dist/index.cjs`)
+- Health check: `GET /api/auth/me`
+
+**Environment variables to set in Railway:**
+| Variable | Value |
+|----------|-------|
+| `DATABASE_URL` | PostgreSQL connection string |
+| `REDIS_URL` | Redis URL (e.g. `rediss://...@upstash.io:6379`) |
+| `SESSION_SECRET` | Long random string for session signing |
+| `CORS_ORIGIN` | Your Vercel frontend URL (e.g. `https://scrapercloud.vercel.app`) |
+| `NODE_ENV` | `production` |
+
+### How cross-origin auth works
+
+When `CORS_ORIGIN` is set, the backend automatically:
+- Enables CORS with `credentials: true` for the specified Vercel origin
+- Sets session cookies with `sameSite: "none"` (required for cross-origin cookies)
+- Sets `secure: true` (required alongside `sameSite: "none"`)
+
+The frontend automatically prefixes all API calls with `VITE_API_URL` when set, sending them to Railway instead of relative paths.
+
+### Local development
+
+Local dev is unchanged — run `npm run dev`. No env vars needed; API calls use relative paths and CORS uses localhost origins.
 
 ## Job Processing Architecture
 

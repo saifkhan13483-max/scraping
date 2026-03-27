@@ -1,5 +1,10 @@
 import { QueryClient, QueryFunction, QueryCache } from "@tanstack/react-query";
 
+// When the frontend (Vercel) and backend (Railway) are on different domains,
+// set VITE_API_URL in Vercel to your Railway backend URL (e.g. https://scrapercloud.up.railway.app).
+// In local dev and monorepo deployments, leave it unset — relative paths are used.
+const API_BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? "";
+
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
     const text = (await res.text()) || res.statusText;
@@ -12,7 +17,7 @@ export async function apiRequest(
   url: string,
   data?: unknown | undefined,
 ): Promise<Response> {
-  const res = await fetch(url, {
+  const res = await fetch(`${API_BASE}${url}`, {
     method,
     headers: data ? { "Content-Type": "application/json" } : {},
     body: data ? JSON.stringify(data) : undefined,
@@ -29,7 +34,7 @@ export const getQueryFn: <T>(options: {
 }) => QueryFunction<T> =
   ({ on401: unauthorizedBehavior }) =>
   async ({ queryKey }) => {
-    const res = await fetch(queryKey[0] as string, {
+    const res = await fetch(`${API_BASE}${queryKey[0] as string}`, {
       credentials: "include",
     });
 
