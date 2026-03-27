@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useForm } from "react-hook-form";
@@ -12,6 +12,7 @@ import { Form, FormControl, FormField, FormItem, FormMessage } from "@/component
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
 import AppLayout from "@/components/app-layout";
@@ -19,9 +20,10 @@ import { Link } from "wouter";
 import {
   Globe, Clock, CheckCircle2, XCircle, Loader2, RefreshCw, Trash2, Plus,
   Terminal, AlertCircle, Copy, Zap, ArrowUpRight, Send, ListFilter,
-  RotateCcw, Inbox, TrendingUp,
+  RotateCcw, Inbox, TrendingUp, Search, X, Download, CheckCheck,
+  Activity, BarChart3,
 } from "lucide-react";
-import { formatDistanceToNow } from "date-fns";
+import { formatDistanceToNow, format } from "date-fns";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -30,6 +32,7 @@ const STATUS_CONFIG: Record<JobStatus, {
   textClass: string;
   badgeClass: string;
   dotClass: string;
+  barClass: string;
   Icon: React.ComponentType<{ className?: string }>;
 }> = {
   pending: {
@@ -37,6 +40,7 @@ const STATUS_CONFIG: Record<JobStatus, {
     textClass: "text-amber-600 dark:text-amber-400",
     badgeClass: "bg-amber-500/10 text-amber-700 dark:text-amber-400 border border-amber-500/25",
     dotClass: "bg-amber-500",
+    barClass: "bg-amber-500",
     Icon: Clock,
   },
   processing: {
@@ -44,6 +48,7 @@ const STATUS_CONFIG: Record<JobStatus, {
     textClass: "text-primary",
     badgeClass: "bg-primary/10 text-primary border border-primary/25",
     dotClass: "bg-primary animate-pulse",
+    barClass: "bg-primary",
     Icon: Loader2,
   },
   completed: {
@@ -51,6 +56,7 @@ const STATUS_CONFIG: Record<JobStatus, {
     textClass: "text-emerald-600 dark:text-emerald-400",
     badgeClass: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/25",
     dotClass: "bg-emerald-500",
+    barClass: "bg-emerald-500",
     Icon: CheckCircle2,
   },
   failed: {
@@ -58,6 +64,7 @@ const STATUS_CONFIG: Record<JobStatus, {
     textClass: "text-red-600 dark:text-red-400",
     badgeClass: "bg-red-500/10 text-red-700 dark:text-red-400 border border-red-500/25",
     dotClass: "bg-red-500",
+    barClass: "bg-red-500",
     Icon: XCircle,
   },
 };
@@ -74,18 +81,28 @@ function StatusBadge({ status }: { status: JobStatus }) {
   );
 }
 
-// ─── Stat Cards ──────────────────────────────────────────────────────────────
+// ─── Stat Card ────────────────────────────────────────────────────────────────
 
 function StatCard({
-  label, value, total, icon: Icon, colorClass, bgClass, barClass,
+  label, value, total, icon: Icon, colorClass, bgClass, barClass, onClick, active,
 }: {
   label: string; value: number; total: number;
   icon: React.ComponentType<{ className?: string }>;
   colorClass: string; bgClass: string; barClass: string;
+  onClick?: () => void;
+  active?: boolean;
 }) {
   const pct = total > 0 ? Math.round((value / total) * 100) : 0;
   return (
-    <div className="bg-card border border-border/60 rounded-2xl p-4 flex flex-col gap-3">
+    <button
+      onClick={onClick}
+      data-testid={`card-stat-${label.toLowerCase()}`}
+      className={`bg-card border rounded-2xl p-4 flex flex-col gap-3 text-left w-full transition-all duration-200 ${
+        active
+          ? "border-primary/40 ring-2 ring-primary/20 shadow-sm"
+          : "border-border/60 hover:border-border hover:shadow-sm"
+      } ${onClick ? "cursor-pointer" : "cursor-default"}`}
+    >
       <div className="flex items-center justify-between">
         <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">{label}</span>
         <div className={`w-8 h-8 rounded-xl flex items-center justify-center ${bgClass}`}>
@@ -98,12 +115,57 @@ function StatCard({
           {total > 0 ? `${pct}% of total` : "No jobs yet"}
         </p>
       </div>
-      <div className="h-1 rounded-full bg-muted overflow-hidden">
+      <div className="h-1.5 rounded-full bg-muted overflow-hidden">
         <div
-          className={`h-full rounded-full transition-all duration-500 ${barClass}`}
+          className={`h-full rounded-full transition-all duration-700 ${barClass}`}
           style={{ width: `${pct}%` }}
         />
       </div>
+    </button>
+  );
+}
+
+// ─── Summary Card ─────────────────────────────────────────────────────────────
+
+function SummaryCard({ total, successRate }: { total: number; successRate: number }) {
+  return (
+    <div className="bg-card border border-border/60 rounded-2xl p-4 flex flex-col gap-3">
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Total Jobs</span>
+        <div className="w-8 h-8 rounded-xl flex items-center justify-center bg-violet-500/10">
+          <BarChart3 className="w-4 h-4 text-violet-500" />
+        </div>
+      </div>
+      <div>
+        <p className="text-3xl font-bold tabular-nums text-foreground">{total}</p>
+        <p className="text-xs text-muted-foreground mt-0.5">
+          {total > 0 ? `${successRate}% success rate` : "No jobs yet"}
+        </p>
+      </div>
+      <div className="h-1.5 rounded-full bg-muted overflow-hidden">
+        <div
+          className="h-full rounded-full bg-violet-500 transition-all duration-700"
+          style={{ width: `${successRate}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
+// ─── Stat Skeleton ────────────────────────────────────────────────────────────
+
+function StatSkeleton() {
+  return (
+    <div className="bg-card border border-border/60 rounded-2xl p-4 flex flex-col gap-3">
+      <div className="flex items-center justify-between">
+        <Skeleton className="h-3.5 w-20 rounded" />
+        <Skeleton className="h-8 w-8 rounded-xl" />
+      </div>
+      <div>
+        <Skeleton className="h-9 w-12 rounded mb-1" />
+        <Skeleton className="h-3 w-24 rounded" />
+      </div>
+      <Skeleton className="h-1.5 w-full rounded-full" />
     </div>
   );
 }
@@ -122,19 +184,29 @@ function QuotaBanner({ sub }: { sub: Subscription }) {
   const critical = pct >= 95;
 
   return (
-    <div className={`rounded-2xl border p-4 flex items-center gap-4 ${
+    <div className={`rounded-2xl border p-4 flex flex-col sm:flex-row items-start sm:items-center gap-3 sm:gap-4 ${
       critical ? "border-red-500/30 bg-red-500/5" :
       nearLimit ? "border-amber-500/30 bg-amber-500/5" :
       "border-border/60 bg-card"
     }`}>
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center justify-between mb-2 gap-2">
-          <p className="text-xs font-semibold text-muted-foreground">Monthly Usage</p>
-          <p className={`text-xs font-semibold tabular-nums shrink-0 ${
+      <div className="flex items-center gap-2.5 shrink-0">
+        <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${
+          critical ? "bg-red-500/10" : nearLimit ? "bg-amber-500/10" : "bg-primary/10"
+        }`}>
+          <Activity className={`w-4 h-4 ${
+            critical ? "text-red-500" : nearLimit ? "text-amber-500" : "text-primary"
+          }`} />
+        </div>
+        <span className="text-sm font-semibold text-foreground">Monthly Usage</span>
+      </div>
+      <div className="flex-1 min-w-0 w-full sm:w-auto">
+        <div className="flex items-center justify-between mb-1.5 gap-2">
+          <p className="text-xs text-muted-foreground">{PLAN_CONFIG[plan].label} plan</p>
+          <p className={`text-xs font-bold tabular-nums shrink-0 ${
             critical ? "text-red-600 dark:text-red-400" :
             nearLimit ? "text-amber-600 dark:text-amber-400" :
             "text-muted-foreground"
-          }`}>{used} / {limit}</p>
+          }`}>{used} / {limit} jobs</p>
         </div>
         <div className="w-full h-2 rounded-full bg-muted overflow-hidden">
           <div
@@ -146,13 +218,13 @@ function QuotaBanner({ sub }: { sub: Subscription }) {
         </div>
         {nearLimit && (
           <p className={`text-xs mt-1.5 ${critical ? "text-red-600 dark:text-red-400" : "text-amber-600 dark:text-amber-400"}`}>
-            {critical ? "You've almost hit your limit" : "Approaching your monthly limit"}
+            {critical ? "You've almost hit your limit — upgrade now to keep scraping" : "Approaching your monthly limit"}
           </p>
         )}
       </div>
       {nearLimit && (
         <Link href="/subscription">
-          <Button size="sm" className="gap-1.5 shrink-0 h-8" data-testid="button-upgrade-banner">
+          <Button size="sm" className="gap-1.5 shrink-0 h-8 whitespace-nowrap" data-testid="button-upgrade-banner">
             <Zap className="w-3.5 h-3.5" />Upgrade
           </Button>
         </Link>
@@ -184,27 +256,37 @@ function JobRow({ job, onSelect }: { job: Job; onSelect: (j: Job) => void }) {
     onError: () => toast({ title: "Failed to delete job", variant: "destructive" }),
   });
 
+  const downloadResult = () => {
+    if (!job.result) return;
+    const blob = new Blob([JSON.stringify(job.result, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `job-${job.id.slice(0, 8)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast({ title: "Result downloaded" });
+  };
+
   return (
     <div
       className="group flex items-center gap-3 px-4 py-3.5 hover:bg-accent/40 active:bg-accent/60 cursor-pointer transition-colors border-b border-border/50 last:border-0"
       onClick={() => onSelect(job)}
       data-testid={`row-job-${job.id}`}
     >
-      {/* Status dot */}
       <div className={`w-2 h-2 rounded-full shrink-0 ${STATUS_CONFIG[job.status as JobStatus].dotClass}`} />
 
-      {/* Main content */}
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 flex-wrap">
           <span
-            className="text-sm font-medium text-foreground truncate max-w-[200px] sm:max-w-xs md:max-w-sm"
+            className="text-sm font-medium text-foreground truncate max-w-[140px] xs:max-w-[200px] sm:max-w-xs md:max-w-sm"
             data-testid={`text-url-${job.id}`}
           >
             {job.url}
           </span>
           <StatusBadge status={job.status as JobStatus} />
           {parseInt(job.retryCount) > 0 && (
-            <span className="text-[10px] bg-muted text-muted-foreground px-1.5 py-0.5 rounded font-medium">
+            <span className="text-[10px] bg-muted text-muted-foreground px-1.5 py-0.5 rounded font-medium hidden sm:inline">
               retry ×{job.retryCount}
             </span>
           )}
@@ -218,11 +300,22 @@ function JobRow({ job, onSelect }: { job: Job; onSelect: (j: Job) => void }) {
         </div>
       </div>
 
-      {/* Actions */}
       <div
         className="flex items-center gap-1 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity"
         onClick={(e) => e.stopPropagation()}
       >
+        {job.status === "completed" && job.result && (
+          <Button
+            size="icon"
+            variant="ghost"
+            className="h-8 w-8 text-muted-foreground hover:text-emerald-600"
+            onClick={downloadResult}
+            data-testid={`button-download-${job.id}`}
+            title="Download JSON"
+          >
+            <Download className="w-3.5 h-3.5" />
+          </Button>
+        )}
         {job.status === "failed" && (
           <Button
             size="icon"
@@ -257,7 +350,28 @@ function JobRow({ job, onSelect }: { job: Job; onSelect: (j: Job) => void }) {
   );
 }
 
-// ─── Job Detail ───────────────────────────────────────────────────────────────
+// ─── Job Row Skeleton ─────────────────────────────────────────────────────────
+
+function JobRowSkeleton() {
+  return (
+    <div className="flex items-center gap-3 px-4 py-3.5 border-b border-border/50 last:border-0">
+      <Skeleton className="w-2 h-2 rounded-full shrink-0" />
+      <div className="flex-1 min-w-0 space-y-2">
+        <div className="flex items-center gap-2">
+          <Skeleton className="h-4 w-48 rounded" />
+          <Skeleton className="h-5 w-20 rounded-full" />
+        </div>
+        <div className="flex items-center gap-2">
+          <Skeleton className="h-3 w-16 rounded" />
+          <Skeleton className="h-3 w-20 rounded" />
+        </div>
+      </div>
+      <Skeleton className="h-8 w-8 rounded" />
+    </div>
+  );
+}
+
+// ─── Job Detail Panel ─────────────────────────────────────────────────────────
 
 function DetailRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -276,11 +390,22 @@ function JobDetailPanel({
   const { toast } = useToast();
   if (!job) return null;
 
-  const cfg = STATUS_CONFIG[job.status as JobStatus];
   const resultStr = job.result ? JSON.stringify(job.result, null, 2) : null;
   const copy = (text: string, label = "Copied to clipboard") => {
     navigator.clipboard.writeText(text);
     toast({ title: label });
+  };
+
+  const downloadResult = () => {
+    if (!job.result) return;
+    const blob = new Blob([JSON.stringify(job.result, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `job-${job.id.slice(0, 8)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast({ title: "Result downloaded" });
   };
 
   const retryMutation = useMutation({
@@ -294,53 +419,74 @@ function JobDetailPanel({
   });
 
   const content = (
-    <div className="flex flex-col gap-5 pt-2">
-      {/* Status + badges */}
+    <div className="flex flex-col gap-5 pt-2 pb-4">
       <div className="flex items-center gap-2 flex-wrap">
         <StatusBadge status={job.status as JobStatus} />
         {parseInt(job.retryCount) > 0 && (
           <span className="text-xs bg-muted text-muted-foreground px-2 py-0.5 rounded-full font-medium">
-            {job.retryCount} retries
+            {job.retryCount} {parseInt(job.retryCount) === 1 ? "retry" : "retries"}
           </span>
         )}
       </div>
 
-      {/* Metadata */}
       <div className="space-y-3.5 bg-muted/40 rounded-xl border border-border/50 p-4">
         <DetailRow label="Job ID">
           <div className="flex items-center gap-2">
             <span className="font-mono text-xs text-foreground break-all">{job.id}</span>
-            <Button size="icon" variant="ghost" className="h-6 w-6 shrink-0" onClick={() => copy(job.id, "Job ID copied")}>
+            <Button
+              size="icon"
+              variant="ghost"
+              className="h-6 w-6 shrink-0"
+              onClick={() => copy(job.id, "Job ID copied")}
+              data-testid="button-copy-id"
+            >
               <Copy className="w-3 h-3" />
             </Button>
           </div>
         </DetailRow>
         <div className="border-t border-border/40" />
         <DetailRow label="URL">
-          <a
-            href={job.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-primary text-sm break-all hover:underline inline-flex items-center gap-1"
-          >
-            {job.url}
-            <ArrowUpRight className="w-3 h-3 shrink-0 opacity-60" />
-          </a>
+          <div className="flex items-start gap-2">
+            <a
+              href={job.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-primary text-sm break-all hover:underline inline-flex items-center gap-1 flex-1 min-w-0"
+              data-testid="link-job-url"
+            >
+              <span className="break-all">{job.url}</span>
+              <ArrowUpRight className="w-3 h-3 shrink-0 opacity-60" />
+            </a>
+            <Button
+              size="icon"
+              variant="ghost"
+              className="h-6 w-6 shrink-0 mt-0.5"
+              onClick={() => copy(job.url, "URL copied")}
+              data-testid="button-copy-url"
+            >
+              <Copy className="w-3 h-3" />
+            </Button>
+          </div>
         </DetailRow>
         <div className="border-t border-border/40" />
         <DetailRow label="Created">
-          <span className="text-sm text-muted-foreground">
-            {new Date(job.createdAt).toLocaleString()}{" "}
-            <span className="opacity-60">({formatDistanceToNow(new Date(job.createdAt), { addSuffix: true })})</span>
-          </span>
+          <div>
+            <span className="text-sm text-muted-foreground">
+              {format(new Date(job.createdAt), "MMM d, yyyy 'at' h:mm a")}
+            </span>
+            <span className="text-xs opacity-50 ml-2">
+              ({formatDistanceToNow(new Date(job.createdAt), { addSuffix: true })})
+            </span>
+          </div>
         </DetailRow>
         <div className="border-t border-border/40" />
         <DetailRow label="Updated">
-          <span className="text-sm text-muted-foreground">{new Date(job.updatedAt).toLocaleString()}</span>
+          <span className="text-sm text-muted-foreground">
+            {format(new Date(job.updatedAt), "MMM d, yyyy 'at' h:mm a")}
+          </span>
         </DetailRow>
       </div>
 
-      {/* Error */}
       {job.error && (
         <div>
           <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Error</p>
@@ -355,6 +501,7 @@ function JobDetailPanel({
               className="mt-3 gap-2"
               disabled={retryMutation.isPending}
               onClick={() => retryMutation.mutate()}
+              data-testid="button-retry-detail"
             >
               {retryMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RotateCcw className="w-3.5 h-3.5" />}
               Retry this job
@@ -363,29 +510,39 @@ function JobDetailPanel({
         </div>
       )}
 
-      {/* Result */}
       {resultStr && (
         <div>
-          <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center justify-between mb-2 gap-2">
             <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Result</p>
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-7 gap-1.5 text-xs"
-              onClick={() => copy(resultStr, "Result copied")}
-            >
-              <Copy className="w-3 h-3" />Copy JSON
-            </Button>
+            <div className="flex items-center gap-1">
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 gap-1.5 text-xs"
+                onClick={() => copy(resultStr, "Result copied")}
+                data-testid="button-copy-result"
+              >
+                <Copy className="w-3 h-3" />Copy
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 gap-1.5 text-xs"
+                onClick={downloadResult}
+                data-testid="button-download-result"
+              >
+                <Download className="w-3 h-3" />Download
+              </Button>
+            </div>
           </div>
           <div className="bg-muted/60 rounded-xl border border-border/50 p-3">
-            <pre className="text-xs font-mono text-foreground whitespace-pre-wrap break-all overflow-auto max-h-72 leading-relaxed">
+            <pre className="text-xs font-mono text-foreground whitespace-pre-wrap break-all overflow-auto max-h-64 leading-relaxed">
               {resultStr}
             </pre>
           </div>
         </div>
       )}
 
-      {/* Pending / processing empty */}
       {!job.error && !resultStr && (
         <div className="flex flex-col items-center justify-center py-8 text-muted-foreground gap-2">
           {job.status === "processing" ? (
@@ -409,7 +566,7 @@ function JobDetailPanel({
   if (isMobile) {
     return (
       <Sheet open={open} onOpenChange={(v) => !v && onClose()}>
-        <SheetContent side="bottom" className="h-[85vh] px-0 flex flex-col">
+        <SheetContent side="bottom" className="h-[88vh] px-0 flex flex-col">
           <SheetHeader className="px-5 py-4 border-b border-border/50 shrink-0">
             <SheetTitle className="flex items-center gap-2 text-base">
               <Terminal className="w-4 h-4 text-primary" />
@@ -453,8 +610,10 @@ export default function Dashboard() {
   const { toast } = useToast();
   const { user } = useAuth();
   const [filter, setFilter] = useState<"all" | JobStatus>("all");
+  const [search, setSearch] = useState("");
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   const { data: jobs = [], isLoading, isFetching, refetch } = useQuery<Job[]>({
     queryKey: ["/api/jobs"],
@@ -492,6 +651,18 @@ export default function Dashboard() {
     },
   });
 
+  const clearCompletedMutation = useMutation({
+    mutationFn: async () => {
+      const completed = jobs.filter((j) => j.status === "completed");
+      await Promise.all(completed.map((j) => apiRequest("DELETE", `/api/jobs/${j.id}`)));
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+      toast({ title: "Completed jobs cleared" });
+    },
+    onError: () => toast({ title: "Failed to clear jobs", variant: "destructive" }),
+  });
+
   const stats = {
     total: jobs.length,
     pending: jobs.filter((j) => j.status === "pending").length,
@@ -500,13 +671,20 @@ export default function Dashboard() {
     failed: jobs.filter((j) => j.status === "failed").length,
   };
 
-  const filtered = filter === "all" ? jobs : jobs.filter((j) => j.status === filter);
+  const successRate = stats.total > 0
+    ? Math.round((stats.completed / stats.total) * 100)
+    : 0;
+
+  const filtered = jobs
+    .filter((j) => filter === "all" || j.status === filter)
+    .filter((j) => !search || j.url.toLowerCase().includes(search.toLowerCase()) || j.id.toLowerCase().includes(search.toLowerCase()));
+
   const filterCount: Record<string, number> = {
-    all: stats.total,
-    pending: stats.pending,
-    processing: stats.processing,
-    completed: stats.completed,
-    failed: stats.failed,
+    all: jobs.filter((j) => !search || j.url.toLowerCase().includes(search.toLowerCase()) || j.id.toLowerCase().includes(search.toLowerCase())).length,
+    pending: jobs.filter((j) => j.status === "pending" && (!search || j.url.toLowerCase().includes(search.toLowerCase()))).length,
+    processing: jobs.filter((j) => j.status === "processing" && (!search || j.url.toLowerCase().includes(search.toLowerCase()))).length,
+    completed: jobs.filter((j) => j.status === "completed" && (!search || j.url.toLowerCase().includes(search.toLowerCase()))).length,
+    failed: jobs.filter((j) => j.status === "failed" && (!search || j.url.toLowerCase().includes(search.toLowerCase()))).length,
   };
 
   const handleOpenDetail = (job: Job) => {
@@ -514,16 +692,17 @@ export default function Dashboard() {
     setDetailOpen(true);
   };
 
-  // Use sheet on narrow screens, dialog on wider
   const [isMobileView, setIsMobileView] = useState(() =>
     typeof window !== "undefined" ? window.innerWidth < 640 : false
   );
-  // Sync on resize
   useEffect(() => {
     const handler = () => setIsMobileView(window.innerWidth < 640);
     window.addEventListener("resize", handler);
     return () => window.removeEventListener("resize", handler);
   }, []);
+
+  const hasCompletedJobs = stats.completed > 0;
+  const hasActiveFilter = filter !== "all" || search !== "";
 
   return (
     <AppLayout>
@@ -550,6 +729,7 @@ export default function Dashboard() {
               className="h-9 w-9 rounded-xl border-border/60"
               onClick={() => refetch()}
               data-testid="button-refresh"
+              title="Refresh"
             >
               <RefreshCw className={`w-4 h-4 ${isFetching ? "animate-spin" : ""}`} />
             </Button>
@@ -560,23 +740,44 @@ export default function Dashboard() {
         {sub && <QuotaBanner sub={sub} />}
 
         {/* ── Stats ─────────────────────────────────────────── */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          <StatCard
-            label="Pending" value={stats.pending} total={stats.total}
-            icon={Clock} colorClass="text-amber-500" bgClass="bg-amber-500/10"
-          />
-          <StatCard
-            label="Processing" value={stats.processing} total={stats.total}
-            icon={Loader2} colorClass="text-primary" bgClass="bg-primary/10"
-          />
-          <StatCard
-            label="Completed" value={stats.completed} total={stats.total}
-            icon={CheckCircle2} colorClass="text-emerald-500" bgClass="bg-emerald-500/10"
-          />
-          <StatCard
-            label="Failed" value={stats.failed} total={stats.total}
-            icon={XCircle} colorClass="text-red-500" bgClass="bg-red-500/10"
-          />
+        <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+          {isLoading ? (
+            <>
+              <StatSkeleton />
+              <StatSkeleton />
+              <StatSkeleton />
+              <StatSkeleton />
+              <StatSkeleton />
+            </>
+          ) : (
+            <>
+              <SummaryCard total={stats.total} successRate={successRate} />
+              <StatCard
+                label="Pending" value={stats.pending} total={stats.total}
+                icon={Clock} colorClass="text-amber-500" bgClass="bg-amber-500/10" barClass="bg-amber-500"
+                onClick={() => setFilter(filter === "pending" ? "all" : "pending")}
+                active={filter === "pending"}
+              />
+              <StatCard
+                label="Processing" value={stats.processing} total={stats.total}
+                icon={Loader2} colorClass="text-primary" bgClass="bg-primary/10" barClass="bg-primary"
+                onClick={() => setFilter(filter === "processing" ? "all" : "processing")}
+                active={filter === "processing"}
+              />
+              <StatCard
+                label="Completed" value={stats.completed} total={stats.total}
+                icon={CheckCircle2} colorClass="text-emerald-500" bgClass="bg-emerald-500/10" barClass="bg-emerald-500"
+                onClick={() => setFilter(filter === "completed" ? "all" : "completed")}
+                active={filter === "completed"}
+              />
+              <StatCard
+                label="Failed" value={stats.failed} total={stats.total}
+                icon={XCircle} colorClass="text-red-500" bgClass="bg-red-500/10" barClass="bg-red-500"
+                onClick={() => setFilter(filter === "failed" ? "all" : "failed")}
+                active={filter === "failed"}
+              />
+            </>
+          )}
         </div>
 
         {/* ── Submit Form ────────────────────────────────────── */}
@@ -638,15 +839,56 @@ export default function Dashboard() {
                   <ListFilter className="w-3.5 h-3.5 text-primary" />
                 </div>
                 <h2 className="text-sm font-semibold">Jobs</h2>
-                <span className="text-xs text-muted-foreground bg-muted rounded-full px-2 py-0.5 font-medium">
+                <span className="text-xs text-muted-foreground bg-muted rounded-full px-2 py-0.5 font-medium tabular-nums">
                   {filtered.length}
                 </span>
               </div>
-              {stats.processing > 0 && (
-                <div className="flex items-center gap-1.5 text-xs text-primary sm:hidden">
-                  <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
-                  {stats.processing} running
-                </div>
+              <div className="flex items-center gap-2">
+                {stats.processing > 0 && (
+                  <div className="flex items-center gap-1.5 text-xs text-primary sm:hidden">
+                    <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
+                    {stats.processing} running
+                  </div>
+                )}
+                {hasCompletedJobs && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 gap-1.5 text-xs hidden sm:flex"
+                    disabled={clearCompletedMutation.isPending}
+                    onClick={() => clearCompletedMutation.mutate()}
+                    data-testid="button-clear-completed"
+                  >
+                    {clearCompletedMutation.isPending
+                      ? <Loader2 className="w-3 h-3 animate-spin" />
+                      : <CheckCheck className="w-3 h-3" />
+                    }
+                    Clear completed
+                  </Button>
+                )}
+              </div>
+            </div>
+
+            {/* Search */}
+            <div className="relative mb-3">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+              <input
+                ref={searchInputRef}
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search by URL or job ID…"
+                className="w-full pl-8 pr-8 py-2 text-sm rounded-lg bg-muted/50 border border-border/50 focus:outline-none focus:ring-1 focus:ring-primary/40 focus:border-primary/40 transition-all placeholder:text-muted-foreground/60"
+                data-testid="input-search-jobs"
+              />
+              {search && (
+                <button
+                  onClick={() => setSearch("")}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                  data-testid="button-clear-search"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
               )}
             </div>
 
@@ -676,27 +918,83 @@ export default function Dashboard() {
 
           <div className="border-t border-border/50" />
 
+          {/* Mobile clear completed */}
+          {hasCompletedJobs && (
+            <div className="sm:hidden px-4 py-2 border-b border-border/50">
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 gap-1.5 text-xs w-full"
+                disabled={clearCompletedMutation.isPending}
+                onClick={() => clearCompletedMutation.mutate()}
+                data-testid="button-clear-completed-mobile"
+              >
+                {clearCompletedMutation.isPending
+                  ? <Loader2 className="w-3 h-3 animate-spin" />
+                  : <CheckCheck className="w-3 h-3" />
+                }
+                Clear completed jobs
+              </Button>
+            </div>
+          )}
+
+          {/* Active filter + search indicator */}
+          {hasActiveFilter && !isLoading && (
+            <div className="px-4 py-2 flex items-center gap-2 border-b border-border/50 bg-muted/30">
+              <span className="text-xs text-muted-foreground">
+                Showing {filtered.length} of {stats.total} jobs
+              </span>
+              <button
+                onClick={() => { setFilter("all"); setSearch(""); }}
+                className="text-xs text-primary hover:underline font-medium ml-auto"
+                data-testid="button-clear-filters"
+              >
+                Clear filters
+              </button>
+            </div>
+          )}
+
           {/* Job rows */}
           {isLoading ? (
-            <div className="flex flex-col items-center justify-center py-16 gap-3 text-muted-foreground">
-              <Loader2 className="w-7 h-7 animate-spin opacity-40" />
-              <p className="text-sm">Loading jobs…</p>
+            <div>
+              {Array.from({ length: 5 }).map((_, i) => <JobRowSkeleton key={i} />)}
             </div>
           ) : filtered.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-16 gap-3 text-muted-foreground">
               <div className="w-14 h-14 rounded-2xl bg-muted/60 flex items-center justify-center">
-                {filter === "all"
-                  ? <Inbox className="w-7 h-7 opacity-40" />
-                  : <TrendingUp className="w-7 h-7 opacity-40" />
+                {search
+                  ? <Search className="w-7 h-7 opacity-40" />
+                  : filter === "all"
+                    ? <Inbox className="w-7 h-7 opacity-40" />
+                    : <TrendingUp className="w-7 h-7 opacity-40" />
                 }
               </div>
               <div className="text-center">
                 <p className="font-semibold text-sm text-foreground/70">
-                  {filter === "all" ? "No jobs yet" : `No ${filter} jobs`}
+                  {search
+                    ? "No results found"
+                    : filter === "all"
+                      ? "No jobs yet"
+                      : `No ${filter} jobs`
+                  }
                 </p>
                 <p className="text-xs opacity-60 mt-0.5">
-                  {filter === "all" ? "Submit a URL above to start scraping" : `Switch filter to see other jobs`}
+                  {search
+                    ? `No jobs match "${search}"`
+                    : filter === "all"
+                      ? "Submit a URL above to start scraping"
+                      : "Switch filter or submit new jobs"
+                  }
                 </p>
+                {(search || filter !== "all") && (
+                  <button
+                    onClick={() => { setFilter("all"); setSearch(""); }}
+                    className="text-xs text-primary hover:underline font-medium mt-2"
+                    data-testid="button-reset-filters"
+                  >
+                    Clear filters
+                  </button>
+                )}
               </div>
             </div>
           ) : (
