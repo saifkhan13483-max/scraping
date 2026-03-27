@@ -26,7 +26,16 @@ function NewKeyDialog({ open, onClose, onCreated }: { open: boolean; onClose: ()
       setName("");
       queryClient.invalidateQueries({ queryKey: ["/api/keys"] });
     },
-    onError: () => toast({ title: "Failed to create API key", variant: "destructive" }),
+    onError: (err: unknown) => {
+      let message = "Failed to create API key";
+      if (err instanceof Error) {
+        const match = err.message.match(/^\d+: (.+)$/);
+        if (match) {
+          try { message = JSON.parse(match[1]).error || message; } catch { message = match[1] || message; }
+        }
+      }
+      toast({ title: message, variant: "destructive" });
+    },
   });
 
   return (

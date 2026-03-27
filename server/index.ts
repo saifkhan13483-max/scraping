@@ -10,6 +10,9 @@ import { startRecoveryWatchdog } from "./storage";
 const app = express();
 const httpServer = createServer(app);
 
+// Trust reverse proxy (Vercel, nginx, etc.) so req.secure and secure cookies work correctly
+app.set("trust proxy", 1);
+
 declare module "http" {
   interface IncomingMessage {
     rawBody: unknown;
@@ -107,9 +110,9 @@ const initPromise = (async () => {
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
     const message = err.message || "Internal Server Error";
-    console.error("Internal Server Error:", err);
+    console.error("[ERROR]", err);
     if (res.headersSent) return next(err);
-    return res.status(status).json({ message });
+    return res.status(status).json({ error: message });
   });
 
   // Start HTTP server only when NOT running as a Vercel serverless function

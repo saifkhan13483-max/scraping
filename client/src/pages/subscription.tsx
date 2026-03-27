@@ -55,7 +55,16 @@ export default function SubscriptionPage() {
       queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
       toast({ title: "Plan updated successfully" });
     },
-    onError: () => toast({ title: "Failed to update plan", variant: "destructive" }),
+    onError: (err: unknown) => {
+      let message = "Failed to update plan";
+      if (err instanceof Error) {
+        const match = err.message.match(/^\d+: (.+)$/);
+        if (match) {
+          try { message = JSON.parse(match[1]).error || message; } catch { message = match[1] || message; }
+        }
+      }
+      toast({ title: message, variant: "destructive" });
+    },
     onSettled: () => setPendingPlan(null),
   });
 

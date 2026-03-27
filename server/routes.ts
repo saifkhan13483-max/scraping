@@ -221,11 +221,5 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     return res.json({ success: true });
   });
 
-  // Centralized error handler
-  app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
-    console.error("[ERROR]", err);
-    res.status(500).json({ error: "Internal server error", message: err.message });
-  });
-
   return httpServer;
 }
