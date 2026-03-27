@@ -138,7 +138,7 @@ export default function AuthPage() {
                   <FormItem>
                     <FormLabel>Email</FormLabel>
                     <FormControl>
-                      <Input {...field} type="email" placeholder="you@example.com" data-testid="input-email" />
+                      <Input {...field} type="email" placeholder="you@example.com" autoComplete="email" data-testid="input-email" />
                     </FormControl>
                     <FormMessage />
                   </FormItem>
@@ -147,7 +147,7 @@ export default function AuthPage() {
                   <FormItem>
                     <FormLabel>Password</FormLabel>
                     <FormControl>
-                      <Input {...field} type="password" placeholder="••••••••" data-testid="input-password" />
+                      <Input {...field} type="password" placeholder="••••••••" autoComplete="current-password" data-testid="input-password" />
                     </FormControl>
                     <FormMessage />
                   </FormItem>
@@ -164,7 +164,7 @@ export default function AuthPage() {
                   <FormItem>
                     <FormLabel>Full name</FormLabel>
                     <FormControl>
-                      <Input {...field} placeholder="Jane Doe" data-testid="input-name" />
+                      <Input {...field} placeholder="Your full name" autoComplete="name" data-testid="input-name" />
                     </FormControl>
                     <FormMessage />
                   </FormItem>
@@ -173,7 +173,7 @@ export default function AuthPage() {
                   <FormItem>
                     <FormLabel>Email</FormLabel>
                     <FormControl>
-                      <Input {...field} type="email" placeholder="you@example.com" data-testid="input-register-email" />
+                      <Input {...field} type="email" placeholder="you@example.com" autoComplete="email" data-testid="input-register-email" />
                     </FormControl>
                     <FormMessage />
                   </FormItem>
@@ -182,7 +182,7 @@ export default function AuthPage() {
                   <FormItem>
                     <FormLabel>Password</FormLabel>
                     <FormControl>
-                      <Input {...field} type="password" placeholder="At least 8 characters" data-testid="input-register-password" />
+                      <Input {...field} type="password" placeholder="At least 8 characters" autoComplete="new-password" data-testid="input-register-password" />
                     </FormControl>
                     <FormMessage />
                   </FormItem>
@@ -191,7 +191,7 @@ export default function AuthPage() {
                   <FormItem>
                     <FormLabel>Confirm password</FormLabel>
                     <FormControl>
-                      <Input {...field} type="password" placeholder="••••••••" data-testid="input-confirm-password" />
+                      <Input {...field} type="password" placeholder="••••••••" autoComplete="new-password" data-testid="input-confirm-password" />
                     </FormControl>
                     <FormMessage />
                   </FormItem>
