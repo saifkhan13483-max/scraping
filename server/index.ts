@@ -64,10 +64,7 @@ app.use(
 // ─── Health check routes ───────────────────────────────────────────────────────
 // Registered FIRST — before session/db/auth middleware — so Railway's
 // healthcheck can reach them immediately on startup even if the database is
-// still connecting. Railway checks GET / (or a configured path) for 200 OK.
-app.get("/", (_req: Request, res: Response) => {
-  res.status(200).send("API is running");
-});
+// still connecting. Configure Railway's healthcheck path to /health or /api/health.
 app.get("/health", (_req: Request, res: Response) => {
   res.status(200).json({ status: "ok" });
 });
