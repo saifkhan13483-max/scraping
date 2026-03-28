@@ -3,10 +3,8 @@ import cors from "cors";
 import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
 import { Pool } from "pg";
-import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
-import { startRecoveryWatchdog } from "./storage";
 
 // ─── Global crash guards ───────────────────────────────────────────────────────
 // Prevent unhandled rejections or uncaught exceptions from silently killing the
@@ -181,17 +179,18 @@ app.use(sessionMiddleware);
 // ─── Routes + Vite (fully async, after server is already listening) ────────────
 (async () => {
   try {
+    const { registerRoutes } = await import("./routes");
     await registerRoutes(httpServer, app);
     log("Routes registered");
 
     if (process.env.NODE_ENV === "production") {
+      const { startRecoveryWatchdog } = await import("./storage");
       startRecoveryWatchdog().catch((err) =>
         console.error("[WATCHDOG] Failed to start:", err),
       );
-      if (process.env.SERVE_STATIC === "true") {
-        serveStatic(app);
-      }
+      serveStatic(app);
     } else {
+      const { startRecoveryWatchdog } = await import("./storage");
       await startRecoveryWatchdog();
       const { setupVite } = await import("./vite");
       await setupVite(httpServer, app);
