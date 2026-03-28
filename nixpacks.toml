@@ -1,2 +1,5 @@
 [phases.install]
-cmds = ["npm install --omit=dev"]
+cmds = [
+  "npm install",
+  "npm prune --omit=dev"
+]
