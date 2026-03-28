@@ -8,6 +8,7 @@ import type { Job, JobStatus, InsertJob, Subscription } from "@shared/schema";
 import { PLAN_CONFIG } from "@shared/schema";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Form, FormControl, FormField, FormItem, FormMessage } from "@/components/ui/form";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -21,7 +22,7 @@ import {
   Globe, Clock, CheckCircle2, XCircle, Loader2, RefreshCw, Trash2, Plus,
   Terminal, AlertCircle, Copy, Zap, ArrowUpRight, Send, ListFilter,
   RotateCcw, Inbox, TrendingUp, Search, X, Download, CheckCheck,
-  Activity, BarChart3,
+  Activity, BarChart3, Sparkles, Tag, Timer, ChevronDown, ChevronUp,
 } from "lucide-react";
 import { formatDistanceToNow, format } from "date-fns";
 
@@ -76,6 +77,25 @@ function StatusBadge({ status }: { status: JobStatus }) {
   return (
     <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium shrink-0 ${cfg.badgeClass}`}>
       <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${cfg.dotClass}`} />
+      {cfg.label}
+    </span>
+  );
+}
+
+// ─── PriorityBadge ────────────────────────────────────────────────────────────
+
+const PRIORITY_CONFIG = {
+  high:   { label: "High",   cls: "bg-red-500/10 text-red-600 dark:text-red-400 border border-red-500/25" },
+  normal: { label: "Normal", cls: "bg-muted text-muted-foreground border border-border/50" },
+  low:    { label: "Low",    cls: "bg-slate-500/10 text-slate-500 dark:text-slate-400 border border-slate-500/20" },
+};
+
+function PriorityBadge({ priority }: { priority?: string | null }) {
+  const p = (priority ?? "normal") as keyof typeof PRIORITY_CONFIG;
+  const cfg = PRIORITY_CONFIG[p] ?? PRIORITY_CONFIG.normal;
+  if (p === "normal") return null;
+  return (
+    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold shrink-0 ${cfg.cls}`}>
       {cfg.label}
     </span>
   );
@@ -285,6 +305,7 @@ function JobRow({ job, onSelect }: { job: Job; onSelect: (j: Job) => void }) {
             {job.url}
           </span>
           <StatusBadge status={job.status as JobStatus} />
+          <PriorityBadge priority={job.priority} />
           {parseInt(job.retryCount) > 0 && (
             <span className="text-[10px] bg-muted text-muted-foreground px-1.5 py-0.5 rounded font-medium hidden sm:inline">
               retry ×{job.retryCount}
@@ -469,6 +490,18 @@ function JobDetailPanel({
           </div>
         </DetailRow>
         <div className="border-t border-border/40" />
+        <DetailRow label="Priority">
+          <span className="text-sm text-muted-foreground capitalize">{job.priority ?? "normal"}</span>
+        </DetailRow>
+        {job.workerId && (
+          <>
+            <div className="border-t border-border/40" />
+            <DetailRow label="Worker">
+              <span className="text-sm font-mono text-muted-foreground">{job.workerId}</span>
+            </DetailRow>
+          </>
+        )}
+        <div className="border-t border-border/40" />
         <DetailRow label="Created">
           <div>
             <span className="text-sm text-muted-foreground">
@@ -510,38 +543,75 @@ function JobDetailPanel({
         </div>
       )}
 
-      {resultStr && (
-        <div>
-          <div className="flex items-center justify-between mb-2 gap-2">
-            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Result</p>
-            <div className="flex items-center gap-1">
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-7 gap-1.5 text-xs"
-                onClick={() => copy(resultStr, "Result copied")}
-                data-testid="button-copy-result"
-              >
-                <Copy className="w-3 h-3" />Copy
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-7 gap-1.5 text-xs"
-                onClick={downloadResult}
-                data-testid="button-download-result"
-              >
-                <Download className="w-3 h-3" />Download
-              </Button>
+      {resultStr && (() => {
+        const resultObj = job.result as any;
+        const ai = resultObj?.ai as { summary?: string; insights?: string[]; category?: string } | undefined;
+        return (
+          <>
+            {ai && (ai.summary || ai.insights?.length || ai.category) && (
+              <div>
+                <div className="flex items-center gap-2 mb-2.5">
+                  <div className="w-6 h-6 rounded-lg bg-violet-500/10 flex items-center justify-center">
+                    <Sparkles className="w-3.5 h-3.5 text-violet-500" />
+                  </div>
+                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">AI Insights</p>
+                  {ai.category && (
+                    <span className="ml-auto inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-violet-500/10 text-violet-600 dark:text-violet-400 border border-violet-500/20">
+                      <Tag className="w-2.5 h-2.5" />{ai.category}
+                    </span>
+                  )}
+                </div>
+                <div className="bg-violet-500/5 border border-violet-500/15 rounded-xl p-4 space-y-3">
+                  {ai.summary && (
+                    <p className="text-sm text-foreground/80 leading-relaxed">{ai.summary}</p>
+                  )}
+                  {ai.insights && ai.insights.length > 0 && (
+                    <ul className="space-y-1.5 border-t border-violet-500/10 pt-3">
+                      {ai.insights.map((insight, i) => (
+                        <li key={i} className="flex items-start gap-2 text-xs text-muted-foreground">
+                          <CheckCircle2 className="w-3.5 h-3.5 text-violet-500 shrink-0 mt-0.5" />
+                          <span>{insight}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </div>
+            )}
+
+            <div>
+              <div className="flex items-center justify-between mb-2 gap-2">
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Raw Result</p>
+                <div className="flex items-center gap-1">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 gap-1.5 text-xs"
+                    onClick={() => copy(resultStr, "Result copied")}
+                    data-testid="button-copy-result"
+                  >
+                    <Copy className="w-3 h-3" />Copy
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 gap-1.5 text-xs"
+                    onClick={downloadResult}
+                    data-testid="button-download-result"
+                  >
+                    <Download className="w-3 h-3" />Download
+                  </Button>
+                </div>
+              </div>
+              <div className="bg-muted/60 rounded-xl border border-border/50 p-3">
+                <pre className="text-xs font-mono text-foreground whitespace-pre-wrap break-all overflow-auto max-h-64 leading-relaxed">
+                  {resultStr}
+                </pre>
+              </div>
             </div>
-          </div>
-          <div className="bg-muted/60 rounded-xl border border-border/50 p-3">
-            <pre className="text-xs font-mono text-foreground whitespace-pre-wrap break-all overflow-auto max-h-64 leading-relaxed">
-              {resultStr}
-            </pre>
-          </div>
-        </div>
-      )}
+          </>
+        );
+      })()}
 
       {!job.error && !resultStr && (
         <div className="flex flex-col items-center justify-center py-8 text-muted-foreground gap-2">
@@ -626,9 +696,11 @@ export default function Dashboard() {
     enabled: !!user,
   });
 
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
   const form = useForm<InsertJob>({
     resolver: zodResolver(insertJobSchema),
-    defaultValues: { url: "" },
+    defaultValues: { url: "", priority: "normal", delay: undefined },
   });
 
   const createMutation = useMutation({
@@ -782,48 +854,130 @@ export default function Dashboard() {
 
         {/* ── Submit Form ────────────────────────────────────── */}
         <div className="bg-card border border-border/60 rounded-2xl p-4 sm:p-5">
-          <div className="flex items-center gap-2 mb-3">
-            <div className="w-7 h-7 rounded-lg bg-primary/10 flex items-center justify-center">
-              <Send className="w-3.5 h-3.5 text-primary" />
+          <div className="flex items-center justify-between gap-2 mb-3">
+            <div className="flex items-center gap-2">
+              <div className="w-7 h-7 rounded-lg bg-primary/10 flex items-center justify-center">
+                <Send className="w-3.5 h-3.5 text-primary" />
+              </div>
+              <h2 className="text-sm font-semibold">Submit a Scraping Job</h2>
             </div>
-            <h2 className="text-sm font-semibold">Submit a Scraping Job</h2>
+            <button
+              type="button"
+              onClick={() => setShowAdvanced((v) => !v)}
+              className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1 transition-colors"
+              data-testid="button-toggle-advanced"
+            >
+              {showAdvanced ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+              Options
+            </button>
           </div>
           <Form {...form}>
             <form
               onSubmit={form.handleSubmit((data) => createMutation.mutate(data))}
-              className="flex flex-col sm:flex-row gap-2"
+              className="space-y-2"
             >
-              <FormField
-                control={form.control}
-                name="url"
-                render={({ field }) => (
-                  <FormItem className="flex-1">
-                    <FormControl>
-                      <div className="relative">
-                        <Globe className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                        <Input
-                          {...field}
-                          placeholder="https://example.com"
-                          className="pl-9 h-11 font-mono text-sm bg-background border-border/70 focus:border-primary transition-colors"
-                          data-testid="input-url"
-                        />
-                      </div>
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <Button
-                type="submit"
-                className="h-11 gap-2 px-5 shrink-0 font-semibold"
-                disabled={createMutation.isPending}
-                data-testid="button-submit-job"
-              >
-                {createMutation.isPending
-                  ? <Loader2 className="w-4 h-4 animate-spin" />
-                  : <><Plus className="w-4 h-4" />Submit</>
-                }
-              </Button>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <FormField
+                  control={form.control}
+                  name="url"
+                  render={({ field }) => (
+                    <FormItem className="flex-1">
+                      <FormControl>
+                        <div className="relative">
+                          <Globe className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                          <Input
+                            {...field}
+                            placeholder="https://example.com"
+                            className="pl-9 h-11 font-mono text-sm bg-background border-border/70 focus:border-primary transition-colors"
+                            data-testid="input-url"
+                          />
+                        </div>
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <Button
+                  type="submit"
+                  className="h-11 gap-2 px-5 shrink-0 font-semibold"
+                  disabled={createMutation.isPending}
+                  data-testid="button-submit-job"
+                >
+                  {createMutation.isPending
+                    ? <Loader2 className="w-4 h-4 animate-spin" />
+                    : <><Plus className="w-4 h-4" />Submit</>
+                  }
+                </Button>
+              </div>
+
+              {showAdvanced && (
+                <div className="flex flex-col sm:flex-row gap-2 pt-1">
+                  <FormField
+                    control={form.control}
+                    name="priority"
+                    render={({ field }) => (
+                      <FormItem className="flex-1">
+                        <FormControl>
+                          <Select value={field.value ?? "normal"} onValueChange={field.onChange}>
+                            <SelectTrigger className="h-9 text-xs bg-background border-border/70" data-testid="select-priority">
+                              <div className="flex items-center gap-2">
+                                <Zap className="w-3.5 h-3.5 text-muted-foreground" />
+                                <SelectValue placeholder="Priority" />
+                              </div>
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="high">
+                                <div className="flex items-center gap-2">
+                                  <span className="w-2 h-2 rounded-full bg-red-500" />
+                                  High priority
+                                </div>
+                              </SelectItem>
+                              <SelectItem value="normal">
+                                <div className="flex items-center gap-2">
+                                  <span className="w-2 h-2 rounded-full bg-primary" />
+                                  Normal priority
+                                </div>
+                              </SelectItem>
+                              <SelectItem value="low">
+                                <div className="flex items-center gap-2">
+                                  <span className="w-2 h-2 rounded-full bg-slate-400" />
+                                  Low priority
+                                </div>
+                              </SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <FormField
+                    control={form.control}
+                    name="delay"
+                    render={({ field }) => (
+                      <FormItem className="flex-1">
+                        <FormControl>
+                          <div className="relative">
+                            <Timer className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+                            <Input
+                              type="number"
+                              min={0}
+                              max={3600000}
+                              step={1000}
+                              placeholder="Delay (ms) — optional"
+                              className="pl-9 h-9 text-xs bg-background border-border/70"
+                              data-testid="input-delay"
+                              value={field.value ?? ""}
+                              onChange={(e) => field.onChange(e.target.value ? parseInt(e.target.value) : undefined)}
+                            />
+                          </div>
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                </div>
+              )}
             </form>
           </Form>
         </div>

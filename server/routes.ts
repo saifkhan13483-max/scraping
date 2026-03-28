@@ -2,9 +2,40 @@ import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { scrapeUrl } from "./scraper";
+import { generateInsights } from "./ai";
 import { insertJobSchema, submitResultSchema, failJobSchema, retryJobSchema, insertUserSchema, createApiKeySchema } from "@shared/schema";
 import { ZodError, z } from "zod";
 import { requireAuth, resolveUser } from "./auth";
+import rateLimit from "express-rate-limit";
+
+// ─── Rate limiters ─────────────────────────────────────────────────────────────
+
+const globalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many requests, please try again later." },
+  skip: (req) => req.path === "/api/health",
+});
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many auth attempts. Please wait before trying again." },
+});
+
+const jobLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many job submissions. Please slow down." },
+});
+
+// ─── Helpers ───────────────────────────────────────────────────────────────────
 
 function isValidUrl(url: string): boolean {
   try {
@@ -16,11 +47,13 @@ function isValidUrl(url: string): boolean {
 }
 
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
+  // Apply global rate limiter to all routes
+  app.use(globalLimiter);
   app.use(resolveUser);
 
   // ── Auth Routes ─────────────────────────────────────────────────────────────
 
-  app.post("/api/auth/register", async (req: Request, res: Response) => {
+  app.post("/api/auth/register", authLimiter, async (req: Request, res: Response) => {
     try {
       const parsed = insertUserSchema.parse(req.body);
       const existing = await storage.getUserByEmail(parsed.email);
@@ -39,7 +72,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  app.post("/api/auth/login", async (req: Request, res: Response) => {
+  app.post("/api/auth/login", authLimiter, async (req: Request, res: Response) => {
     try {
       const { email, password } = z.object({ email: z.string().email(), password: z.string() }).parse(req.body);
       const user = await storage.getUserByEmail(email);
@@ -123,7 +156,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // ── Job Routes ──────────────────────────────────────────────────────────────
 
-  app.post("/api/job", requireAuth, async (req: Request, res: Response) => {
+  app.post("/api/job", requireAuth, jobLimiter, async (req: Request, res: Response) => {
     try {
       const parsed = insertJobSchema.parse(req.body);
       if (!isValidUrl(parsed.url)) {
@@ -140,8 +173,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const job = await storage.createJob(parsed, userId);
       await storage.incrementJobUsage(userId);
 
-      // Fire-and-forget: trigger server-side processing so jobs run on Vercel
-      // without needing an external worker process.
+      // Fire-and-forget: trigger server-side processing so jobs run without an external worker.
       const host = req.get("host") || "localhost:5000";
       const protocol = req.secure || req.headers["x-forwarded-proto"] === "https" ? "https" : "http";
       fetch(`${protocol}://${host}/api/jobs/process`, { method: "POST" }).catch((e) =>
@@ -165,21 +197,22 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // Server-side job processor — picks up one pending job and scrapes it in-process.
-  // Called automatically after job creation (fire-and-forget) so jobs work on Vercel
-  // without requiring an external Playwright worker.
   app.post("/api/jobs/process", async (_req: Request, res: Response) => {
     const job = await storage.getNextPendingJob();
     if (!job) return res.status(204).send();
 
+    const workerId = `server-${process.pid}`;
     try {
-      const result = await scrapeUrl(job.url);
-      await storage.completeJob(job.id, result);
-      console.log(`[PROCESS] Completed job ${job.id} — "${result.title}"`);
+      const scrapeResult = await scrapeUrl(job.url);
+      const insights = await generateInsights(scrapeResult);
+      const result = { ...scrapeResult, ai: insights };
+      await storage.completeJob(job.id, result, workerId);
+      console.log(`[PROCESS] Completed job ${job.id} — "${scrapeResult.title}" [worker=${workerId}]`);
       return res.json({ success: true, jobId: job.id });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown scrape error";
-      await storage.failJob(job.id, message);
-      console.error(`[PROCESS] Failed job ${job.id}: ${message}`);
+      await storage.failJob(job.id, message, workerId);
+      console.error(`[PROCESS] Failed job ${job.id}: ${message} [worker=${workerId}]`);
       return res.json({ success: false, jobId: job.id, error: message });
     }
   });
@@ -199,7 +232,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/result", async (req: Request, res: Response) => {
     try {
       const parsed = submitResultSchema.parse(req.body);
-      const job = await storage.completeJob(parsed.id, parsed.data);
+      const job = await storage.completeJob(parsed.id, parsed.data, parsed.workerId);
       if (!job) return res.status(404).json({ error: "Job not found" });
       return res.json(job);
     } catch (err) {
@@ -213,7 +246,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/fail", async (req: Request, res: Response) => {
     try {
       const parsed = failJobSchema.parse(req.body);
-      const job = await storage.failJob(parsed.id, parsed.error);
+      const job = await storage.failJob(parsed.id, parsed.error, parsed.workerId);
       if (!job) return res.status(404).json({ error: "Job not found" });
       return res.json(job);
     } catch (err) {

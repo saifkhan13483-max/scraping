@@ -33,6 +33,7 @@ if (rawUrl) {
 
   const store = new Map<string, string | string[]>();
   const lists = new Map<string, string[]>();
+  const sortedSets = new Map<string, Array<{ score: number; member: string }>>();
 
   const inMemoryClient = {
     pipeline: () => {
@@ -64,6 +65,7 @@ if (rawUrl) {
           ops.push(async () => {
             store.delete(key);
             lists.delete(key);
+            sortedSets.delete(key);
           });
           return pipe;
         },
@@ -76,6 +78,24 @@ if (rawUrl) {
         },
         set: (key: string, val: string, _ex?: string, _ttl?: number) => {
           ops.push(async () => store.set(key, val));
+          return pipe;
+        },
+        zadd: (key: string, score: number, member: string) => {
+          ops.push(async () => {
+            const set = sortedSets.get(key) ?? [];
+            const idx = set.findIndex((e) => e.member === member);
+            if (idx >= 0) set[idx].score = score;
+            else set.push({ score, member });
+            set.sort((a, b) => a.score - b.score);
+            sortedSets.set(key, set);
+          });
+          return pipe;
+        },
+        zrem: (key: string, member: string) => {
+          ops.push(async () => {
+            const set = sortedSets.get(key) ?? [];
+            sortedSets.set(key, set.filter((e) => e.member !== member));
+          });
           return pipe;
         },
         exec: async () => {
@@ -127,16 +147,34 @@ if (rawUrl) {
     del: async (key: string) => {
       store.delete(key);
       lists.delete(key);
+      sortedSets.delete(key);
     },
     exists: async (key: string) => {
       return store.has(key) ? 1 : 0;
     },
     scan: async (_cursor: string, _matchKeyword: string, pattern: string, _countKeyword: string, _num: number) => {
-      // Convert Redis glob pattern (e.g. "job:*") to a JS regex
       const regexStr = "^" + pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".") + "$";
       const regex = new RegExp(regexStr);
       const keys = Array.from(store.keys()).filter((k) => regex.test(k));
       return ["0", keys];
+    },
+    zadd: async (key: string, score: number, member: string) => {
+      const set = sortedSets.get(key) ?? [];
+      const idx = set.findIndex((e) => e.member === member);
+      if (idx >= 0) set[idx].score = score;
+      else set.push({ score, member });
+      set.sort((a, b) => a.score - b.score);
+      sortedSets.set(key, set);
+    },
+    zrangebyscore: async (key: string, min: number | string, max: number | string) => {
+      const set = sortedSets.get(key) ?? [];
+      const minN = min === "-inf" ? -Infinity : Number(min);
+      const maxN = max === "+inf" ? Infinity : Number(max);
+      return set.filter((e) => e.score >= minN && e.score <= maxN).map((e) => e.member);
+    },
+    zrem: async (key: string, member: string) => {
+      const set = sortedSets.get(key) ?? [];
+      sortedSets.set(key, set.filter((e) => e.member !== member));
     },
     on: (_event: string, _handler: (...args: any[]) => void) => {},
     disconnect: () => {},
@@ -149,7 +187,21 @@ export { redis };
 
 export const KEYS = {
   job: (id: string) => `job:${id}`,
-  queuePending: "queue:pending",
+  // Priority queues — worker always processes high → normal → low
+  queueHigh: "queue:high",
+  queueNormal: "queue:normal",
+  queueLow: "queue:low",
+  // Delayed jobs sorted set (score = runAt timestamp ms)
+  queueDelayed: "queue:delayed",
+  // Processing queue (jobs handed off to a worker)
   queueProcessing: "queue:processing",
+  // Legacy alias kept for the watchdog
+  queuePending: "queue:normal",
   jobTimestamp: (id: string) => `job:${id}:started_at`,
 } as const;
+
+export function priorityQueue(priority: "high" | "normal" | "low"): string {
+  if (priority === "high") return KEYS.queueHigh;
+  if (priority === "low") return KEYS.queueLow;
+  return KEYS.queueNormal;
+}

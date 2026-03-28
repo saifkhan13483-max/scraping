@@ -1,0 +1,225 @@
+Upgrade this project into a production-ready SaaS platform for distributed web scraping and automation.
+
+IMPORTANT:
+
+* Keep existing architecture (API + Redis + worker)
+* Do NOT break current endpoints
+* Make the system Vercel + Railway friendly
+* Refactor cleanly (modular, scalable, production-grade)
+
+---
+
+## 🌐 DEPLOYMENT TARGET
+
+### Backend:
+
+* Railway (Node.js API + Redis)
+
+### Frontend:
+
+* Vercel (Next.js app)
+
+---
+
+## 🧠 CORE GOAL
+
+Transform this into a SaaS platform with:
+
+* User authentication
+* API key system
+* Job management dashboard
+* AI-powered scraping insights
+* Scalable worker system
+
+---
+
+# 🔐 1. AUTHENTICATION SYSTEM
+
+Implement:
+
+* JWT-based authentication
+* Signup / Login endpoints
+* Password hashing (bcrypt)
+
+User model:
+{
+id,
+email,
+passwordHash,
+apiKey,
+plan,
+createdAt
+}
+
+Endpoints:
+
+* POST /auth/signup
+* POST /auth/login
+* GET /auth/me
+
+---
+
+# 🔑 2. API KEY SYSTEM
+
+* Each user gets a unique API key
+* All /api/job routes must require API key
+* Middleware to validate API key
+
+---
+
+# 💼 3. BILLING & PLANS (basic version)
+
+Plans:
+
+* Free → 50 jobs/day
+* Pro → 1000 jobs/day
+
+Add:
+
+* Usage tracking per user
+* Limit job submissions based on plan
+
+(No Stripe yet — just logic)
+
+---
+
+# 📊 4. DASHBOARD (Next.js frontend)
+
+Create a clean dashboard UI:
+
+Pages:
+
+* Login / Signup
+* Dashboard
+
+Dashboard features:
+
+* Submit new job
+* View jobs list
+* Filter (pending, processing, completed, failed)
+* View job result (JSON formatted)
+* Show usage (jobs used today)
+
+Use:
+
+* Next.js (App Router)
+* Tailwind CSS
+* Fetch API / React Query
+
+---
+
+# 🤖 5. AI INTEGRATION
+
+After scraping, enhance results using AI:
+
+Add:
+
+* Summary (short paragraph)
+* Key insights (bullet points)
+* Category (e.g. blog, ecommerce, landing page)
+
+Structure:
+{
+title,
+description,
+summary,
+insights: [],
+category
+}
+
+Use OpenAI API (mock if key not provided)
+
+---
+
+# ⚙️ 6. SCALABLE WORKER SYSTEM
+
+Improve worker:
+
+* Allow multiple workers to run simultaneously
+* Add worker ID
+* Add logs: which worker processed job
+
+---
+
+# 🚦 7. QUEUE IMPROVEMENTS
+
+Add priority system:
+
+* High / Normal / Low jobs
+* Separate Redis queues:
+
+  * queue:high
+  * queue:normal
+  * queue:low
+
+Worker should:
+
+* Always process high first
+
+---
+
+# ⏱ 8. JOB SCHEDULING
+
+Allow delayed jobs:
+
+POST /api/job
+{
+url,
+delay: 60000
+}
+
+→ job runs after delay
+
+---
+
+# 🛡 9. SECURITY & RATE LIMITING
+
+* Add rate limiter middleware
+* Protect all routes
+* Sanitize inputs
+
+---
+
+# 🧱 10. CODE STRUCTURE
+
+Refactor into:
+
+/server
+/controllers
+/routes
+/services
+/middlewares
+/models
+
+/client (Next.js frontend)
+
+---
+
+# 🚀 11. DEPLOYMENT READY
+
+Backend:
+
+* Works on Railway
+* Uses process.env variables
+
+Frontend:
+
+* Works on Vercel
+* API URL configurable
+
+---
+
+# 📦 OUTPUT REQUIREMENTS
+
+Provide:
+
+1. Updated backend code
+2. New frontend (Next.js)
+3. Updated worker.js
+4. Environment variables needed
+5. Deployment steps (Railway + Vercel)
+
+---
+
+DO NOT OVERCOMPLICATE.
+Keep it clean, modular, and production-ready.

@@ -8,9 +8,12 @@ export const jobs = pgTable("jobs", {
   id: varchar("id").primaryKey(),
   url: text("url").notNull(),
   status: varchar("status", { enum: ["pending", "processing", "completed", "failed"] }).notNull().default("pending"),
+  priority: varchar("priority", { enum: ["high", "normal", "low"] }).notNull().default("normal"),
   result: jsonb("result"),
   error: text("error"),
   retryCount: text("retry_count").notNull().default("0"),
+  workerId: varchar("worker_id", { length: 100 }),
+  runAt: timestamp("run_at"),
   userId: integer("user_id"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
@@ -18,14 +21,21 @@ export const jobs = pgTable("jobs", {
 
 export const insertJobSchema = createInsertSchema(jobs).pick({ url: true }).extend({
   url: z.string().url("Please enter a valid URL (e.g. https://example.com)"),
+  priority: z.enum(["high", "normal", "low"]).default("normal"),
+  delay: z.number().int().min(0).max(3_600_000).optional(),
 });
-export const submitResultSchema = z.object({ id: z.string(), data: z.any() });
-export const failJobSchema = z.object({ id: z.string(), error: z.string() });
+export const submitResultSchema = z.object({
+  id: z.string(),
+  data: z.any(),
+  workerId: z.string().optional(),
+});
+export const failJobSchema = z.object({ id: z.string(), error: z.string(), workerId: z.string().optional() });
 export const retryJobSchema = z.object({ id: z.string() });
 
 export type InsertJob = z.infer<typeof insertJobSchema>;
 export type Job = typeof jobs.$inferSelect;
 export type JobStatus = "pending" | "processing" | "completed" | "failed";
+export type JobPriority = "high" | "normal" | "low";
 
 // ─── Users ───────────────────────────────────────────────────────────────────
 

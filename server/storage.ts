@@ -1,6 +1,6 @@
 import { type Job, type InsertJob, type User, type InsertUser, type Subscription, type ApiKey, type PlanType, PLAN_CONFIG, users, subscriptions, apiKeys } from "@shared/schema";
 import { randomUUID, randomBytes } from "crypto";
-import { redis, KEYS } from "./redis";
+import { redis, KEYS, priorityQueue } from "./redis";
 import { db } from "./db";
 import { eq, and, sql } from "drizzle-orm";
 import bcrypt from "bcryptjs";
@@ -14,10 +14,11 @@ export interface IStorage {
   getNextPendingJob(): Promise<Job | undefined>;
   getJobById(id: string): Promise<Job | undefined>;
   getAllJobs(userId?: number): Promise<Job[]>;
-  completeJob(id: string, data: any): Promise<Job | undefined>;
-  failJob(id: string, error: string): Promise<Job | undefined>;
+  completeJob(id: string, data: any, workerId?: string): Promise<Job | undefined>;
+  failJob(id: string, error: string, workerId?: string): Promise<Job | undefined>;
   retryJob(id: string): Promise<Job | undefined>;
   deleteJob(id: string): Promise<boolean>;
+  promoteDelayedJobs(): Promise<void>;
 
   // User operations (PostgreSQL)
   createUser(data: InsertUser): Promise<User>;
@@ -46,9 +47,12 @@ function serializeJob(job: Job): Record<string, string> {
     id: job.id,
     url: job.url,
     status: job.status,
+    priority: job.priority ?? "normal",
     result: job.result !== null ? JSON.stringify(job.result) : "",
     error: job.error ?? "",
     retryCount: String(job.retryCount),
+    workerId: job.workerId ?? "",
+    runAt: job.runAt ? job.runAt.toISOString() : "",
     userId: job.userId !== null && job.userId !== undefined ? String(job.userId) : "",
     createdAt: job.createdAt.toISOString(),
     updatedAt: job.updatedAt.toISOString(),
@@ -60,9 +64,12 @@ function deserializeJob(hash: Record<string, string>): Job {
     id: hash.id,
     url: hash.url,
     status: hash.status as Job["status"],
+    priority: (hash.priority as Job["priority"]) ?? "normal",
     result: hash.result ? JSON.parse(hash.result) : null,
     error: hash.error || null,
     retryCount: String(parseInt(hash.retryCount ?? "0", 10)),
+    workerId: hash.workerId || null,
+    runAt: hash.runAt ? new Date(hash.runAt) : null,
     userId: hash.userId ? parseInt(hash.userId, 10) : null,
     createdAt: new Date(hash.createdAt),
     updatedAt: new Date(hash.updatedAt),
@@ -80,13 +87,20 @@ export class AppStorage implements IStorage {
   async createJob(insert: InsertJob, userId?: number): Promise<Job> {
     const id = randomUUID();
     const now = new Date();
+    const priority = (insert.priority ?? "normal") as Job["priority"];
+    const delay = (insert as any).delay as number | undefined;
+    const runAt = delay ? new Date(now.getTime() + delay) : null;
+
     const job: Job = {
       id,
       url: insert.url,
       status: "pending",
+      priority,
       result: null,
       error: null,
       retryCount: "0",
+      workerId: null,
+      runAt,
       userId: userId ?? null,
       createdAt: now,
       updatedAt: now,
@@ -94,15 +108,31 @@ export class AppStorage implements IStorage {
 
     const pipeline = redis.pipeline();
     pipeline.hset(KEYS.job(id), serializeJob(job));
-    pipeline.lpush(KEYS.queuePending, id);
-    await pipeline.exec();
 
-    console.log(`[JOB CREATED] id=${id} url=${insert.url} userId=${userId}`);
+    if (runAt && runAt.getTime() > now.getTime()) {
+      // Delayed: add to sorted set — score = run timestamp
+      (pipeline as any).zadd(KEYS.queueDelayed, runAt.getTime(), id);
+      console.log(`[JOB CREATED] id=${id} url=${insert.url} priority=${priority} delay=${delay}ms`);
+    } else {
+      // Immediate: push to priority queue
+      pipeline.lpush(priorityQueue(priority), id);
+      console.log(`[JOB CREATED] id=${id} url=${insert.url} priority=${priority}`);
+    }
+
+    await pipeline.exec();
     return job;
   }
 
   async getNextPendingJob(): Promise<Job | undefined> {
-    const id = await redis.rpoplpush(KEYS.queuePending, KEYS.queueProcessing);
+    // Promote any delayed jobs that are due
+    await this.promoteDelayedJobs();
+
+    // Try queues in priority order: high → normal → low
+    let id: string | null = null;
+    for (const queue of [KEYS.queueHigh, KEYS.queueNormal, KEYS.queueLow]) {
+      id = await redis.rpoplpush(queue, KEYS.queueProcessing);
+      if (id) break;
+    }
     if (!id) return undefined;
 
     const now = new Date();
@@ -123,7 +153,7 @@ export class AppStorage implements IStorage {
     pipeline.set(KEYS.jobTimestamp(id), now.toISOString(), "EX", 600);
     await pipeline.exec();
 
-    console.log(`[JOB PROCESSING] id=${id} url=${updated.url}`);
+    console.log(`[JOB PROCESSING] id=${id} url=${updated.url} priority=${updated.priority}`);
     return updated;
   }
 
@@ -166,7 +196,7 @@ export class AppStorage implements IStorage {
     return jobs.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
   }
 
-  async completeJob(id: string, data: any): Promise<Job | undefined> {
+  async completeJob(id: string, data: any, workerId?: string): Promise<Job | undefined> {
     const hash = await redis.hgetall(KEYS.job(id));
     if (!hash || !hash.id) return undefined;
 
@@ -174,6 +204,7 @@ export class AppStorage implements IStorage {
       ...deserializeJob(hash as Record<string, string>),
       status: "completed",
       result: data,
+      workerId: workerId ?? hash.workerId ?? null,
       updatedAt: new Date(),
     };
 
@@ -183,11 +214,11 @@ export class AppStorage implements IStorage {
     pipeline.del(KEYS.jobTimestamp(id));
     await pipeline.exec();
 
-    console.log(`[JOB COMPLETED] id=${id}`);
+    console.log(`[JOB COMPLETED] id=${id}${workerId ? ` worker=${workerId}` : ""}`);
     return updated;
   }
 
-  async failJob(id: string, error: string): Promise<Job | undefined> {
+  async failJob(id: string, error: string, workerId?: string): Promise<Job | undefined> {
     const hash = await redis.hgetall(KEYS.job(id));
     if (!hash || !hash.id) return undefined;
 
@@ -195,6 +226,7 @@ export class AppStorage implements IStorage {
       ...deserializeJob(hash as Record<string, string>),
       status: "failed",
       error,
+      workerId: workerId ?? hash.workerId ?? null,
       updatedAt: new Date(),
     };
 
@@ -204,7 +236,7 @@ export class AppStorage implements IStorage {
     pipeline.del(KEYS.jobTimestamp(id));
     await pipeline.exec();
 
-    console.log(`[JOB FAILED] id=${id} error=${error}`);
+    console.log(`[JOB FAILED] id=${id} error=${error}${workerId ? ` worker=${workerId}` : ""}`);
     return updated;
   }
 
@@ -214,6 +246,7 @@ export class AppStorage implements IStorage {
     if (hash.status !== "failed") return undefined;
 
     const retryCount = parseInt(hash.retryCount ?? "0", 10) + 1;
+    const priority = (hash.priority ?? "normal") as Job["priority"];
     const updated: Job = {
       ...deserializeJob(hash as Record<string, string>),
       status: "pending",
@@ -224,10 +257,10 @@ export class AppStorage implements IStorage {
 
     const pipeline = redis.pipeline();
     pipeline.hset(KEYS.job(id), serializeJob(updated));
-    pipeline.lpush(KEYS.queuePending, id);
+    pipeline.lpush(priorityQueue(priority), id);
     await pipeline.exec();
 
-    console.log(`[JOB RETRY] id=${id} attempt=${retryCount}`);
+    console.log(`[JOB RETRY] id=${id} attempt=${retryCount} priority=${priority}`);
     return updated;
   }
 
@@ -238,12 +271,39 @@ export class AppStorage implements IStorage {
     const pipeline = redis.pipeline();
     pipeline.del(KEYS.job(id));
     pipeline.del(KEYS.jobTimestamp(id));
-    pipeline.lrem(KEYS.queuePending, 1, id);
+    pipeline.lrem(KEYS.queueHigh, 1, id);
+    pipeline.lrem(KEYS.queueNormal, 1, id);
+    pipeline.lrem(KEYS.queueLow, 1, id);
     pipeline.lrem(KEYS.queueProcessing, 1, id);
+    (pipeline as any).zrem(KEYS.queueDelayed, id);
     await pipeline.exec();
 
     console.log(`[JOB DELETED] id=${id}`);
     return true;
+  }
+
+  async promoteDelayedJobs(): Promise<void> {
+    try {
+      const now = Date.now();
+      const dueIds = await (redis as any).zrangebyscore(KEYS.queueDelayed, 0, now);
+      if (!dueIds || dueIds.length === 0) return;
+
+      for (const id of dueIds) {
+        const hash = await redis.hgetall(KEYS.job(id));
+        if (!hash || !hash.id) {
+          await (redis as any).zrem(KEYS.queueDelayed, id);
+          continue;
+        }
+        const priority = (hash.priority ?? "normal") as "high" | "normal" | "low";
+        const pipeline = redis.pipeline();
+        pipeline.lpush(priorityQueue(priority), id);
+        (pipeline as any).zrem(KEYS.queueDelayed, id);
+        await pipeline.exec();
+        console.log(`[JOB PROMOTED] id=${id} priority=${priority} (was delayed)`);
+      }
+    } catch (err) {
+      console.warn("[DELAYED] Failed to promote delayed jobs:", (err as Error).message);
+    }
   }
 
   // ── User Operations (PostgreSQL) ─────────────
@@ -293,12 +353,10 @@ export class AppStorage implements IStorage {
   async getSubscription(userId: number): Promise<Subscription | undefined> {
     let [sub] = await db.select().from(subscriptions).where(eq(subscriptions.userId, userId));
     if (!sub) {
-      // Auto-create free subscription if missing
       const resetAt = new Date();
       resetAt.setMonth(resetAt.getMonth() + 1);
       [sub] = await db.insert(subscriptions).values({ userId, plan: "free", jobsUsedThisMonth: 0, resetAt }).returning();
     }
-    // Check if monthly reset is due
     if (new Date() > new Date(sub.resetAt)) {
       const newResetAt = new Date();
       newResetAt.setMonth(newResetAt.getMonth() + 1);
@@ -358,8 +416,14 @@ export class AppStorage implements IStorage {
 // ─────────────────────────────────────────────
 
 export async function startRecoveryWatchdog() {
+  const appStorage = storage as AppStorage;
+
   const run = async () => {
     try {
+      // Promote any delayed jobs that are now due
+      await appStorage.promoteDelayedJobs();
+
+      // Recover stuck processing jobs
       const processingIds = await redis.lrange(KEYS.queueProcessing, 0, -1);
       if (processingIds.length === 0) return;
 
@@ -375,6 +439,7 @@ export async function startRecoveryWatchdog() {
             continue;
           }
 
+          const priority = (hash.priority ?? "normal") as "high" | "normal" | "low";
           const recovered: Job = {
             ...deserializeJob(hash as Record<string, string>),
             status: "pending",
@@ -384,11 +449,11 @@ export async function startRecoveryWatchdog() {
           const pipeline = redis.pipeline();
           pipeline.hset(KEYS.job(id), serializeJob(recovered));
           pipeline.lrem(KEYS.queueProcessing, 1, id);
-          pipeline.lpush(KEYS.queuePending, id);
+          pipeline.lpush(priorityQueue(priority), id);
           pipeline.del(KEYS.jobTimestamp(id));
           await pipeline.exec();
 
-          console.log(`[JOB RECOVERED] id=${id} — moved back to pending after timeout`);
+          console.log(`[JOB RECOVERED] id=${id} priority=${priority} — moved back to pending after timeout`);
         }
       }
     } catch (err) {
