@@ -37,17 +37,23 @@ const allowedOrigins: string[] = rawOrigins
   ? rawOrigins.split(",").map((o) => o.trim())
   : [];
 
-app.use(
-  cors({
-    origin: (origin, callback) => {
-      if (!origin) return callback(null, true);
-      if (allowedOrigins.length === 0) return callback(null, true);
-      if (allowedOrigins.includes(origin)) return callback(null, true);
-      return callback(new Error(`CORS: origin "${origin}" is not allowed`));
-    },
-    credentials: true,
-  }),
-);
+const corsOptions: cors.CorsOptions = {
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.length === 0) return callback(null, true);
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    return callback(new Error(`CORS: origin "${origin}" is not allowed`));
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "x-api-key"],
+};
+
+app.use(cors(corsOptions));
+
+// Respond to all OPTIONS preflight requests immediately so cross-origin
+// POST/PUT/DELETE from Vercel → Railway never get a 405 from downstream handlers.
+app.options("/{*path}", cors(corsOptions));
 
 // ─── Health check routes ───────────────────────────────────────────────────────
 app.get("/health", (_req: Request, res: Response) => {

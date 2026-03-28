@@ -7,6 +7,18 @@ const API_BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? "";
 
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
+    // 405 from Vercel's static host means VITE_API_URL is not set — the browser
+    // is POSTing to Vercel itself (which only serves static files) instead of the
+    // Railway backend. Serve a clear actionable message instead of the raw "405:".
+    if (res.status === 405 && !import.meta.env.VITE_API_URL) {
+      console.error(
+        "[API] 405 on", res.url,
+        "— VITE_API_URL is not set. Add it in Vercel → Settings → Environment Variables, pointing to your Railway backend URL."
+      );
+      throw new Error(
+        "Cannot reach the API server. If this is deployed on Vercel, set the VITE_API_URL environment variable to your Railway backend URL and redeploy."
+      );
+    }
     const text = (await res.text()) || res.statusText;
     throw new Error(`${res.status}: ${text}`);
   }
@@ -19,7 +31,9 @@ async function throwIfResNotOk(res: Response) {
       "[API] HTML response received for", res.url,
       "— VITE_API_URL is likely not set on Vercel. Set it to your Railway backend URL."
     );
-    throw new Error("Cannot connect to the API server. Please try again.");
+    throw new Error(
+      "Cannot reach the API server. If this is deployed on Vercel, set the VITE_API_URL environment variable to your Railway backend URL and redeploy."
+    );
   }
 }
 
