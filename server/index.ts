@@ -61,11 +61,18 @@ app.use(
   }),
 );
 
-// ─── Health check ─────────────────────────────────────────────────────────────
-// Registered FIRST, before session/db/auth middleware, so Railway can always
-// reach it immediately on startup even if the database is still connecting.
+// ─── Health check routes ───────────────────────────────────────────────────────
+// Registered FIRST — before session/db/auth middleware — so Railway's
+// healthcheck can reach them immediately on startup even if the database is
+// still connecting. Railway checks GET / (or a configured path) for 200 OK.
+app.get("/", (_req: Request, res: Response) => {
+  res.status(200).send("API is running");
+});
+app.get("/health", (_req: Request, res: Response) => {
+  res.status(200).json({ status: "ok" });
+});
 app.get("/api/health", (_req: Request, res: Response) => {
-  res.json({ status: "ok" });
+  res.status(200).json({ status: "ok" });
 });
 
 export function log(message: string, source = "express") {
@@ -120,9 +127,12 @@ app.use(express.urlencoded({ extended: false }));
 // Networking → Generate Domain to make Railway inject the PORT variable.
 if (!process.env.VERCEL) {
   const port = parseInt(process.env.PORT || "5000", 10);
+  const env = process.env.NODE_ENV || "development";
   httpServer.listen(port, "0.0.0.0", () => {
     log(`serving on port ${port}`);
-    log(`health check: http://0.0.0.0:${port}/api/health`);
+    log(`environment: ${env}`);
+    log(`health check: http://0.0.0.0:${port}/health`);
+    log(`redis: ${process.env.REDIS_URL ? "external" : "in-memory"}`);
   });
 }
 
