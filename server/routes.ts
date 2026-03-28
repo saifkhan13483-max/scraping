@@ -188,8 +188,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  // Worker endpoint — no auth required (external Playwright workers use this)
-  app.get("/api/job", async (_req: Request, res: Response) => {
+  // Worker endpoint — requires session or API key auth (external workers must supply x-api-key)
+  app.get("/api/job", requireAuth, async (_req: Request, res: Response) => {
     const job = await storage.getNextPendingJob();
     if (!job) return res.status(204).send();
     return res.json(job);
@@ -226,11 +226,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     return res.json(job);
   });
 
-  app.post("/api/result", async (req: Request, res: Response) => {
+  app.post("/api/result", requireAuth, async (req: Request, res: Response) => {
     try {
       const parsed = submitResultSchema.parse(req.body);
       const job = await storage.completeJob(parsed.id, parsed.data, parsed.workerId);
       if (!job) return res.status(404).json({ error: "Job not found" });
+      // Verify the job belongs to the authenticated worker's user
+      if (job.userId !== null && job.userId !== req.resolvedUserId) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
       return res.json(job);
     } catch (err) {
       if (err instanceof ZodError) {
@@ -240,11 +244,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  app.post("/api/fail", async (req: Request, res: Response) => {
+  app.post("/api/fail", requireAuth, async (req: Request, res: Response) => {
     try {
       const parsed = failJobSchema.parse(req.body);
       const job = await storage.failJob(parsed.id, parsed.error, parsed.workerId);
       if (!job) return res.status(404).json({ error: "Job not found" });
+      // Verify the job belongs to the authenticated worker's user
+      if (job.userId !== null && job.userId !== req.resolvedUserId) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
       return res.json(job);
     } catch (err) {
       if (err instanceof ZodError) {

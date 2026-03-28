@@ -98,7 +98,7 @@ const faqs = [
   },
   {
     q: "Can I scrape JavaScript-rendered pages?",
-    a: "Yes. Every job runs a full Playwright browser, so JavaScript-heavy single-page apps are handled just like static pages.",
+    a: "Our built-in scraper fetches pages via HTTP and extracts structured data instantly — ideal for most static and server-rendered sites. For heavily JavaScript-driven SPAs that require a real browser, you can connect an external Playwright worker to your account via API key.",
   },
   {
     q: "How does fault tolerance work?",

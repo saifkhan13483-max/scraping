@@ -162,6 +162,12 @@ export async function scrapeUrl(url: string): Promise<ScrapeResult> {
       redirect: "follow",
       signal: controller.signal,
     });
+  } catch (err) {
+    clearTimeout(timeout);
+    if (err instanceof Error && err.name === "AbortError") {
+      throw new Error("Request timed out after 25 seconds");
+    }
+    throw err;
   } finally {
     clearTimeout(timeout);
   }

@@ -124,6 +124,11 @@ client/
 
 - **TypeScript error fixed**: `job.result` (drizzle `jsonb` infers as `unknown`) was used directly in JSX; changed to `!!job.result` so TypeScript is clean (`tsc --noEmit` passes with zero errors).
 - **`clearCompletedMutation` hardened**: Switched from `Promise.all` (fails-fast) to `Promise.allSettled` so partial batch deletes succeed; cache is now always invalidated via `onError` as well; detail panel closes automatically if the currently-open job is among those cleared; toast reports the exact count deleted.
+- **Security — worker endpoints locked down**: `GET /api/job`, `POST /api/result`, and `POST /api/fail` now require authentication (`requireAuth`). External Playwright workers must pass their `x-api-key` header. `POST /api/result` and `POST /api/fail` also verify the job belongs to the authenticated user.
+- **FAQ accuracy**: Corrected the "JavaScript-rendered pages" FAQ answer — it previously claimed "every job runs a full Playwright browser" which was false; the in-server scraper is HTTP/fetch-based. The answer now accurately describes both modes.
+- **Performance — font loading**: `client/index.html` was loading 30+ Google Font families in a single enormous request. Trimmed to only the two fonts actually used: `Inter` and `JetBrains Mono`.
+- **SEO**: Added `<title>`, `<meta name="description">`, Open Graph (`og:*`), and Twitter Card tags to `client/index.html`.
+- **Scraper timeout message**: Timeout now throws `"Request timed out after 25 seconds"` (previously the cryptic `AbortError` message `"This operation was aborted"` was surfaced to users).
 
 ## Security Notes
 

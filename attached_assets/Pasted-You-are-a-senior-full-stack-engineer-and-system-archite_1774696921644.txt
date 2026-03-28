@@ -1,0 +1,99 @@
+You are a senior full-stack engineer and system architect with strong experience in production-grade SaaS applications.
+
+I have a full-stack project with:
+
+* Frontend deployed on Vercel (likely React/Vite)
+* Backend deployed on Railway (Node.js API)
+* External integrations (APIs, database, auth, payments if applicable)
+
+Your task is to perform a COMPLETE audit, debugging, and stabilization of the entire system.
+
+---
+
+## 🔍 PHASE 1: FULL CODEBASE AUDIT
+
+* Review frontend and backend architecture
+* Identify broken, incomplete, or poorly implemented features
+* Detect unused, redundant, or conflicting code
+* Check environment variable usage across Vercel and Railway
+* Validate project structure and best practices
+
+---
+
+## 🐞 PHASE 2: BUG DETECTION & FIXES
+
+* Find and fix all runtime, build-time, and logical errors
+* Resolve frontend-backend communication issues (CORS, API routes, base URLs)
+* Fix async issues, error handling gaps, and edge cases
+* Ensure proper validation on both frontend and backend
+
+---
+
+## 🧩 PHASE 3: FEATURE COMPLETION
+
+* Identify partially implemented or missing features
+* Fully implement them with production-ready logic
+* Ensure UI and backend are properly connected
+* Maintain clean, scalable code
+
+---
+
+## 🔌 PHASE 4: API & INTEGRATION VALIDATION
+
+* Verify all API endpoints work correctly
+* Test request/response flows
+* Fix authentication/session issues if present
+* Ensure database connections and queries are stable
+* Validate third-party integrations (e.g., Stripe, email, etc.)
+
+---
+
+## ⚡ PHASE 5: PERFORMANCE OPTIMIZATION
+
+* Optimize frontend performance (lazy loading, bundle size, caching)
+* Optimize backend performance (queries, response time, memory usage)
+* Remove unnecessary re-renders or API calls
+* Improve loading speed and UX
+
+---
+
+## 🚀 PHASE 6: DEPLOYMENT & PRODUCTION READINESS
+
+* Ensure smooth deployment on:
+
+  * Vercel (frontend)
+  * Railway (backend)
+* Fix environment/config mismatches
+* Ensure build and start scripts are correct
+* Add proper logging and error monitoring
+* Confirm app runs without errors in production
+
+---
+
+## 🛡️ PHASE 7: STABILITY & SAFETY
+
+* Add proper error handling everywhere
+* Prevent crashes and undefined states
+* Ensure database migrations/schema are applied
+* Add fallback handling for failed APIs
+
+---
+
+## 📋 OUTPUT REQUIREMENTS
+
+Provide:
+
+1. List of all issues found (categorized by severity)
+2. Exact fixes with updated code snippets
+3. Step-by-step implementation instructions
+4. Commands to run (build, deploy, migrate, etc.)
+5. Suggestions to prevent future issues
+
+---
+
+## IMPORTANT:
+
+* Do NOT give generic advice
+* Be specific, actionable, and production-focused
+* Assume this app will be used by real users
+* Prioritize reliability, scalability, and clean architecture
