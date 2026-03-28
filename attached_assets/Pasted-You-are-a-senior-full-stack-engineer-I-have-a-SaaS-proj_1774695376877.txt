@@ -1,0 +1,77 @@
+You are a senior full-stack engineer.
+
+I have a SaaS project deployed using:
+- Railway (backend)
+- Vercel (frontend)
+- Node.js + Vite + TypeScript
+- Likely using PostgreSQL (Railway DB)
+
+I am facing two critical issues. Analyze carefully and fix them step-by-step with production-safe solutions.
+
+----------------------------------------
+ISSUE 1: Build Failure (Nixpacks)
+----------------------------------------
+Problem:
+My nixpacks.toml runs:
+
+npm prune --omit=dev
+
+during the install phase, which removes devDependencies like:
+- vite
+- typescript
+- build tools
+
+As a result, the build fails because these tools are required during the build step.
+
+Your Tasks:
+1. Explain WHY this is breaking the build in simple terms.
+2. Provide a corrected nixpacks.toml configuration.
+3. Ensure:
+   - devDependencies are available during build
+   - but NOT included in final production image
+4. Follow best practices for Railway + Nixpacks deployment.
+5. If multi-stage build is better, implement that.
+
+----------------------------------------
+ISSUE 2: Registration Failure (Database)
+----------------------------------------
+Problem:
+User registration fails in production.
+Likely cause:
+- Database tables were never created in Railway PostgreSQL
+- No schema/migrations were applied
+
+Your Tasks:
+1. Confirm root cause possibilities.
+2. Provide a step-by-step fix to:
+   - Push schema to Railway DB
+   - Run migrations (Prisma / Drizzle / Sequelize — ask if unclear)
+3. Show exact commands for:
+   - initializing DB
+   - running migrations in production
+4. Add a safety check:
+   - Auto-run migrations on deploy (if safe)
+5. Include debugging steps:
+   - how to verify tables exist
+   - how to check Railway logs
+
+----------------------------------------
+BONUS (IMPORTANT)
+----------------------------------------
+- Suggest a robust production workflow:
+  - build
+  - migrate DB
+  - start server
+- Prevent future deployment breakage
+- Include common mistakes and how to avoid them
+
+----------------------------------------
+OUTPUT FORMAT:
+----------------------------------------
+- Clear explanation
+- Fixed config/code blocks
+- Step-by-step instructions
+- Commands ready to copy-paste
+- Beginner-friendly but production-grade
+
+Do NOT give vague advice. Be specific.
