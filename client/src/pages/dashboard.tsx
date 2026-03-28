@@ -646,7 +646,7 @@ export default function Dashboard() {
   const { user } = useAuth();
   const [filter, setFilter] = useState<"all" | JobStatus>("all");
   const [search, setSearch] = useState("");
-  const [selectedJob, setSelectedJob] = useState<Job | null>(null);
+  const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
@@ -659,6 +659,7 @@ export default function Dashboard() {
   const { data: sub } = useQuery<Subscription>({
     queryKey: ["/api/subscription"],
     enabled: !!user,
+    refetchInterval: 10000,
   });
 
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -724,8 +725,12 @@ export default function Dashboard() {
     failed: jobs.filter((j) => j.status === "failed" && (!search || j.url.toLowerCase().includes(search.toLowerCase()))).length,
   };
 
+  // Always derive the displayed job from the live jobs list so the detail panel
+  // reflects updates from the 3-second polling interval automatically.
+  const selectedJob = selectedJobId ? (jobs.find((j) => j.id === selectedJobId) ?? null) : null;
+
   const handleOpenDetail = (job: Job) => {
-    setSelectedJob(job);
+    setSelectedJobId(job.id);
     setDetailOpen(true);
   };
 
@@ -1131,7 +1136,7 @@ export default function Dashboard() {
       <JobDetailPanel
         job={selectedJob}
         open={detailOpen}
-        onClose={() => setDetailOpen(false)}
+        onClose={() => { setDetailOpen(false); setSelectedJobId(null); }}
         isMobile={isMobileView}
       />
     </AppLayout>

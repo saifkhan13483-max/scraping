@@ -253,8 +253,8 @@ export default function Landing() {
             </div>
             <pre className="p-4 sm:p-5 text-xs sm:text-sm font-mono overflow-x-auto leading-relaxed">
 <code><span className="text-muted-foreground"># Submit a scraping job</span>
-<span className="text-primary">curl</span> -X POST https://api.scrapercloud.io/api/jobs \
-  -H <span className="text-green-500">"Authorization: Bearer YOUR_API_KEY"</span> \
+<span className="text-primary">curl</span> -X POST https://api.scrapercloud.io/api/job \
+  -H <span className="text-green-500">"x-api-key: YOUR_API_KEY"</span> \
   -H <span className="text-green-500">"Content-Type: application/json"</span> \
   -d <span className="text-green-500">'&#123;"url": "https://example.com"&#125;'</span>
 

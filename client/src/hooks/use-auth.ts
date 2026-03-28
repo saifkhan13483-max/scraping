@@ -3,6 +3,8 @@ import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useLocation } from "wouter";
 import type { Subscription } from "@shared/schema";
 
+const API_BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? "";
+
 export type AuthUser = {
   id: number;
   email: string;
@@ -18,7 +20,7 @@ export function useAuth() {
     retry: false,
     staleTime: 5 * 60 * 1000,
     queryFn: async () => {
-      const res = await fetch("/api/auth/me", {
+      const res = await fetch(`${API_BASE}/api/auth/me`, {
         credentials: "include",
       });
       if (res.status === 401) return null;

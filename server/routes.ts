@@ -262,6 +262,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (existing.userId !== req.resolvedUserId) return res.status(403).json({ error: "Forbidden" });
       const job = await storage.retryJob(parsed.id);
       if (!job) return res.status(404).json({ error: "Job not found or not in failed state" });
+
+      // Fire-and-forget: trigger server-side processing for the retried job
+      const host = req.get("host") || "localhost:5000";
+      const protocol = req.secure || req.headers["x-forwarded-proto"] === "https" ? "https" : "http";
+      fetch(`${protocol}://${host}/api/jobs/process`, { method: "POST" }).catch((e) =>
+        console.warn("[AUTO-PROCESS] Could not trigger retry processing:", e.message)
+      );
+
       return res.json(job);
     } catch (err) {
       if (err instanceof ZodError) {

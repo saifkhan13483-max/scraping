@@ -29,10 +29,11 @@ A full-stack SaaS browser automation job queue system with multi-user authentica
 ### Job Queue
 - Submit URLs for scraping — no browser or Playwright required
 - Server-side HTTP scraper (`server/scraper.ts`) runs directly inside Express, fully compatible with Vercel serverless functions
-- Jobs are auto-triggered after creation via fire-and-forget `POST /api/jobs/process` — no external worker needed
+- Jobs are auto-triggered after creation AND after retry via fire-and-forget `POST /api/jobs/process` — no external worker needed
 - Per-user job isolation — users only see their own jobs
 - Job states: `pending → processing → completed / failed`
-- Auto-refreshing dashboard (every 3 seconds)
+- Auto-refreshing dashboard (every 3 seconds); selected job detail panel always shows live data from the polling
+- Subscription quota updates every 10 seconds in the dashboard
 - Job retry, delete, and detail view
 
 ### What the scraper extracts
