@@ -22,7 +22,7 @@ import {
   Globe, Clock, CheckCircle2, XCircle, Loader2, RefreshCw, Trash2, Plus,
   Terminal, AlertCircle, Copy, Zap, ArrowUpRight, Send, ListFilter,
   RotateCcw, Inbox, TrendingUp, Search, X, Download, CheckCheck,
-  Activity, BarChart3, Sparkles, Tag, Timer, ChevronDown, ChevronUp,
+  Activity, BarChart3, Timer, ChevronDown, ChevronUp,
 } from "lucide-react";
 import { formatDistanceToNow, format } from "date-fns";
 
@@ -543,75 +543,38 @@ function JobDetailPanel({
         </div>
       )}
 
-      {resultStr && (() => {
-        const resultObj = job.result as any;
-        const ai = resultObj?.ai as { summary?: string; insights?: string[]; category?: string } | undefined;
-        return (
-          <>
-            {ai && (ai.summary || ai.insights?.length || ai.category) && (
-              <div>
-                <div className="flex items-center gap-2 mb-2.5">
-                  <div className="w-6 h-6 rounded-lg bg-violet-500/10 flex items-center justify-center">
-                    <Sparkles className="w-3.5 h-3.5 text-violet-500" />
-                  </div>
-                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">AI Insights</p>
-                  {ai.category && (
-                    <span className="ml-auto inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-violet-500/10 text-violet-600 dark:text-violet-400 border border-violet-500/20">
-                      <Tag className="w-2.5 h-2.5" />{ai.category}
-                    </span>
-                  )}
-                </div>
-                <div className="bg-violet-500/5 border border-violet-500/15 rounded-xl p-4 space-y-3">
-                  {ai.summary && (
-                    <p className="text-sm text-foreground/80 leading-relaxed">{ai.summary}</p>
-                  )}
-                  {ai.insights && ai.insights.length > 0 && (
-                    <ul className="space-y-1.5 border-t border-violet-500/10 pt-3">
-                      {ai.insights.map((insight, i) => (
-                        <li key={i} className="flex items-start gap-2 text-xs text-muted-foreground">
-                          <CheckCircle2 className="w-3.5 h-3.5 text-violet-500 shrink-0 mt-0.5" />
-                          <span>{insight}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              </div>
-            )}
-
-            <div>
-              <div className="flex items-center justify-between mb-2 gap-2">
-                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Raw Result</p>
-                <div className="flex items-center gap-1">
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="h-7 gap-1.5 text-xs"
-                    onClick={() => copy(resultStr, "Result copied")}
-                    data-testid="button-copy-result"
-                  >
-                    <Copy className="w-3 h-3" />Copy
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="h-7 gap-1.5 text-xs"
-                    onClick={downloadResult}
-                    data-testid="button-download-result"
-                  >
-                    <Download className="w-3 h-3" />Download
-                  </Button>
-                </div>
-              </div>
-              <div className="bg-muted/60 rounded-xl border border-border/50 p-3">
-                <pre className="text-xs font-mono text-foreground whitespace-pre-wrap break-all overflow-auto max-h-64 leading-relaxed">
-                  {resultStr}
-                </pre>
-              </div>
+      {resultStr && (
+        <div>
+          <div className="flex items-center justify-between mb-2 gap-2">
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Result</p>
+            <div className="flex items-center gap-1">
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 gap-1.5 text-xs"
+                onClick={() => copy(resultStr, "Result copied")}
+                data-testid="button-copy-result"
+              >
+                <Copy className="w-3 h-3" />Copy
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 gap-1.5 text-xs"
+                onClick={downloadResult}
+                data-testid="button-download-result"
+              >
+                <Download className="w-3 h-3" />Download
+              </Button>
             </div>
-          </>
-        );
-      })()}
+          </div>
+          <div className="bg-muted/60 rounded-xl border border-border/50 p-3">
+            <pre className="text-xs font-mono text-foreground whitespace-pre-wrap break-all overflow-auto max-h-64 leading-relaxed">
+              {resultStr}
+            </pre>
+          </div>
+        </div>
+      )}
 
       {!job.error && !resultStr && (
         <div className="flex flex-col items-center justify-center py-8 text-muted-foreground gap-2">

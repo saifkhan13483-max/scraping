@@ -2,7 +2,6 @@ import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { scrapeUrl } from "./scraper";
-import { generateInsights } from "./ai";
 import { insertJobSchema, submitResultSchema, failJobSchema, retryJobSchema, insertUserSchema, createApiKeySchema } from "@shared/schema";
 import { ZodError, z } from "zod";
 import { requireAuth, resolveUser } from "./auth";
@@ -203,11 +202,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
     const workerId = `server-${process.pid}`;
     try {
-      const scrapeResult = await scrapeUrl(job.url);
-      const insights = await generateInsights(scrapeResult);
-      const result = { ...scrapeResult, ai: insights };
+      const result = await scrapeUrl(job.url);
       await storage.completeJob(job.id, result, workerId);
-      console.log(`[PROCESS] Completed job ${job.id} — "${scrapeResult.title}" [worker=${workerId}]`);
+      console.log(`[PROCESS] Completed job ${job.id} — "${result.title}" [worker=${workerId}]`);
       return res.json({ success: true, jobId: job.id });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown scrape error";
