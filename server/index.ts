@@ -8,6 +8,16 @@ import { serveStatic } from "./static";
 import { createServer } from "http";
 import { startRecoveryWatchdog } from "./storage";
 
+// ─── Global crash guards ───────────────────────────────────────────────────────
+// Prevent unhandled rejections or uncaught exceptions from silently killing the
+// process before Railway's health check can reach /api/health.
+process.on("uncaughtException", (err) => {
+  console.error("[FATAL] Uncaught exception:", err);
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("[FATAL] Unhandled promise rejection:", reason);
+});
+
 const app = express();
 const httpServer = createServer(app);
 
@@ -28,7 +38,7 @@ declare module "express-session" {
 
 // ─── CORS ─────────────────────────────────────────────────────────────────────
 // Production (Railway): set CORS_ORIGIN to your Vercel frontend URL.
-// Development: all origins are allowed (Replit preview, localhost, etc.)
+// Development: all origins allowed (Replit preview, localhost, etc.)
 const rawOrigins = process.env.CORS_ORIGIN;
 const allowedOrigins: string[] = rawOrigins
   ? rawOrigins.split(",").map((o) => o.trim())
@@ -37,8 +47,13 @@ const allowedOrigins: string[] = rawOrigins
 app.use(
   cors({
     origin: (origin, callback) => {
+      // Allow requests with no Origin header — this covers Railway's health check
+      // (which comes from healthcheck.railway.app with no Origin header set) and
+      // server-to-server calls like curl, Postman, auto-processing, etc.
       if (!origin) return callback(null, true);
+      // In development (CORS_ORIGIN not set), allow every origin.
       if (allowedOrigins.length === 0) return callback(null, true);
+      // In production, only allow explicitly configured origins.
       if (allowedOrigins.includes(origin)) return callback(null, true);
       return callback(new Error(`CORS: origin "${origin}" is not allowed`));
     },
@@ -46,32 +61,12 @@ app.use(
   }),
 );
 
-// ─── Health check (registered FIRST, before session/db middleware) ────────────
-// Must respond immediately so Railway's startup health check always succeeds,
-// even if the database is still connecting or unreachable.
+// ─── Health check ─────────────────────────────────────────────────────────────
+// Registered FIRST, before session/db/auth middleware, so Railway can always
+// reach it immediately on startup even if the database is still connecting.
 app.get("/api/health", (_req: Request, res: Response) => {
   res.json({ status: "ok" });
 });
-
-// ─── Start listening immediately ──────────────────────────────────────────────
-// The HTTP server starts BEFORE any async database work so that Railway's
-// health check can reach /api/health within the first few seconds of startup.
-if (!process.env.VERCEL) {
-  const port = parseInt(process.env.PORT || "5000", 10);
-  httpServer.listen({ port, host: "0.0.0.0" }, () => {
-    log(`serving on port ${port}`);
-  });
-}
-
-app.use(
-  express.json({
-    verify: (req, _res, buf) => {
-      req.rawBody = buf;
-    },
-  }),
-);
-
-app.use(express.urlencoded({ extended: false }));
 
 export function log(message: string, source = "express") {
   const formattedTime = new Date().toLocaleTimeString("en-US", {
@@ -108,38 +103,79 @@ app.use((req, res, next) => {
   next();
 });
 
-// ─── Session (async — set up after listen so health check isn't blocked) ──────
-const PgSession = connectPgSimple(session);
-const sessionPool = new Pool({ connectionString: process.env.DATABASE_URL });
+app.use(
+  express.json({
+    verify: (req, _res, buf) => {
+      req.rawBody = buf;
+    },
+  }),
+);
 
-// Cross-origin (split deploy): cookies must be sameSite:"none" + secure:true
-// so the browser sends them from the Vercel frontend to the Railway backend.
+app.use(express.urlencoded({ extended: false }));
+
+// ─── Start HTTP server IMMEDIATELY ────────────────────────────────────────────
+// The server must be listening before Railway runs the health check.
+// Railway injects PORT — we use that value, falling back to 5000 for local dev.
+// Note: if PORT is not set on Railway, go to your service → Settings →
+// Networking → Generate Domain to make Railway inject the PORT variable.
+if (!process.env.VERCEL) {
+  const port = parseInt(process.env.PORT || "5000", 10);
+  httpServer.listen(port, "0.0.0.0", () => {
+    log(`serving on port ${port}`);
+    log(`health check: http://0.0.0.0:${port}/api/health`);
+  });
+}
+
+// ─── Session ──────────────────────────────────────────────────────────────────
+// Cross-origin (split deploy): cookies need sameSite:"none" + secure:true
+// so the browser sends them from Vercel frontend to Railway backend.
 const isCrossOrigin = !!process.env.CORS_ORIGIN;
 
-app.use(
-  session({
+let sessionMiddleware: express.RequestHandler;
+
+try {
+  const PgSession = connectPgSimple(session);
+  const sessionPool = new Pool({ connectionString: process.env.DATABASE_URL });
+
+  sessionMiddleware = session({
     store: new PgSession({
       pool: sessionPool,
       createTableIfMissing: true,
-      // Don't let session table creation errors crash the app
-      errorLog: (err) => console.error("[SESSION STORE]", err),
+      errorLog: (err) => console.error("[SESSION STORE]", err.message),
     }),
     secret: process.env.SESSION_SECRET || "scraper-saas-secret-key-change-in-production",
     resave: false,
     saveUninitialized: false,
     cookie: {
-      maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+      maxAge: 30 * 24 * 60 * 60 * 1000,
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       sameSite: isCrossOrigin ? "none" : "lax",
     },
-  }),
-);
+  });
+} catch (err) {
+  console.error("[SESSION] Failed to create session store, using memory store:", err);
+  // Fallback to memory-based sessions (not persistent across restarts)
+  sessionMiddleware = session({
+    secret: process.env.SESSION_SECRET || "scraper-saas-secret-key-change-in-production",
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      maxAge: 30 * 24 * 60 * 60 * 1000,
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: isCrossOrigin ? "none" : "lax",
+    },
+  });
+}
 
-// ─── Routes + Vite (fully async, runs after server is already listening) ──────
+app.use(sessionMiddleware);
+
+// ─── Routes + Vite (fully async, after server is already listening) ────────────
 (async () => {
   try {
     await registerRoutes(httpServer, app);
+    log("Routes registered");
 
     if (process.env.NODE_ENV === "production") {
       startRecoveryWatchdog().catch((err) =>
@@ -154,9 +190,10 @@ app.use(
       await setupVite(httpServer, app);
     }
   } catch (err) {
-    console.error("[INIT] Failed to initialize routes:", err);
+    console.error("[INIT] Failed to initialize app:", err);
   }
 
+  // Error handler — must be registered after all routes
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
     const message = err.message || "Internal Server Error";
@@ -166,15 +203,7 @@ app.use(
   });
 })();
 
-// Default export used by Vercel's @vercel/node serverless handler (legacy monorepo mode)
+// Default export used by Vercel's @vercel/node serverless handler (legacy mode)
 export default async (req: any, res: any) => {
-  // For Vercel: wait until routes are registered before handling requests
-  await new Promise<void>((resolve) => {
-    const check = () => {
-      if ((app as any)._router) resolve();
-      else setTimeout(check, 50);
-    };
-    check();
-  });
   app(req, res);
 };
