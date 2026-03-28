@@ -29,21 +29,26 @@ declare module "express-session" {
 // ─── CORS ─────────────────────────────────────────────────────────────────────
 // In production (Railway), set CORS_ORIGIN to your Vercel frontend URL.
 // Multiple origins can be separated by commas: "https://app.vercel.app,https://custom.domain.com"
-// In development, all localhost origins are allowed.
+// In development, ALL origins are allowed so Replit preview and localhost both work.
 const rawOrigins = process.env.CORS_ORIGIN;
 const allowedOrigins: string[] = rawOrigins
   ? rawOrigins.split(",").map((o) => o.trim())
-  : ["http://localhost:5173", "http://localhost:5000"];
+  : [];
 
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow requests with no Origin header (curl, Postman, server-to-server)
+      // Allow requests with no Origin header (curl, Postman, server-to-server, health checks)
       if (!origin) return callback(null, true);
-      if (allowedOrigins.includes(origin) || allowedOrigins.includes("*")) {
-        return callback(null, true);
-      }
-      return callback(new Error(`CORS: origin "${origin}" is not allowed`));
+
+      // In development (no CORS_ORIGIN set), allow every origin so
+      // Replit's preview domain, localhost:5173, and any other dev URL all work.
+      if (allowedOrigins.length === 0) return callback(null, true);
+
+      // In production, only allow the explicitly configured origins.
+      if (allowedOrigins.includes(origin)) return callback(null, true);
+
+      return callback(new Error(`CORS: origin "${origin}" is not allowed. Set CORS_ORIGIN to include it.`));
     },
     credentials: true,
   }),
