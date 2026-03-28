@@ -325,7 +325,7 @@ function JobRow({ job, onSelect }: { job: Job; onSelect: (j: Job) => void }) {
         className="flex items-center gap-1 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity"
         onClick={(e) => e.stopPropagation()}
       >
-        {job.status === "completed" && job.result && (
+        {job.status === "completed" && !!job.result && (
           <Button
             size="icon"
             variant="ghost"
@@ -692,13 +692,26 @@ export default function Dashboard() {
   const clearCompletedMutation = useMutation({
     mutationFn: async () => {
       const completed = jobs.filter((j) => j.status === "completed");
-      await Promise.all(completed.map((j) => apiRequest("DELETE", `/api/jobs/${j.id}`)));
+      const results = await Promise.allSettled(
+        completed.map((j) => apiRequest("DELETE", `/api/jobs/${j.id}`))
+      );
+      const succeeded = completed
+        .filter((_, i) => results[i].status === "fulfilled")
+        .map((j) => j.id);
+      return succeeded;
     },
-    onSuccess: () => {
+    onSuccess: (deletedIds) => {
       queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
-      toast({ title: "Completed jobs cleared" });
+      if (selectedJobId && deletedIds.includes(selectedJobId)) {
+        setDetailOpen(false);
+        setSelectedJobId(null);
+      }
+      toast({ title: `${deletedIds.length} completed job${deletedIds.length !== 1 ? "s" : ""} cleared` });
     },
-    onError: () => toast({ title: "Failed to clear jobs", variant: "destructive" }),
+    onError: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+      toast({ title: "Failed to clear jobs", variant: "destructive" });
+    },
   });
 
   const stats = {

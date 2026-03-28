@@ -120,6 +120,11 @@ client/
     index.css                     - Tailwind + CSS variables
 ```
 
+## Recent Fixes (March 2026)
+
+- **TypeScript error fixed**: `job.result` (drizzle `jsonb` infers as `unknown`) was used directly in JSX; changed to `!!job.result` so TypeScript is clean (`tsc --noEmit` passes with zero errors).
+- **`clearCompletedMutation` hardened**: Switched from `Promise.all` (fails-fast) to `Promise.allSettled` so partial batch deletes succeed; cache is now always invalidated via `onError` as well; detail panel closes automatically if the currently-open job is among those cleared; toast reports the exact count deleted.
+
 ## Security Notes
 
 - Emails are normalized (lowercased + trimmed) on both registration and login, ensuring consistent lookups
