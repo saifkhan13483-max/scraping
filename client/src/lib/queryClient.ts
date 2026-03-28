@@ -10,14 +10,16 @@ async function throwIfResNotOk(res: Response) {
     const text = (await res.text()) || res.statusText;
     throw new Error(`${res.status}: ${text}`);
   }
-  // Detect when Vercel (or any static host) returns HTML for an API route.
-  // This happens when VITE_API_URL is not set and the SPA catch-all rewrite
-  // intercepts /api/* requests, returning index.html with status 200.
+  // Detect when Vercel (or any static host) returns HTML instead of JSON for
+  // an API route. This happens when VITE_API_URL is not set and Vercel's SPA
+  // catch-all rewrite intercepts /api/* requests, serving index.html (200 OK).
   const contentType = res.headers.get("content-type") ?? "";
   if (contentType.includes("text/html")) {
-    throw new Error(
-      "500: Server returned HTML instead of JSON — the API base URL is not configured correctly"
+    console.error(
+      "[API] HTML response received for", res.url,
+      "— VITE_API_URL is likely not set on Vercel. Set it to your Railway backend URL."
     );
+    throw new Error("Cannot connect to the API server. Please try again.");
   }
 }
 
