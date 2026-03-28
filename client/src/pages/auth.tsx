@@ -259,10 +259,17 @@ export default function AuthPage() {
 
   function parseApiError(err: unknown, fallback: string): string {
     if (err instanceof Error) {
-      const match = err.message.match(/^\d+: (.+)$/);
+      // Standard API error: "NNN: <body>" format
+      const match = err.message.match(/^\d+: ([\s\S]+)$/);
       if (match) {
         try { return JSON.parse(match[1]).error || fallback; } catch { return match[1] || fallback; }
       }
+      // Network / CORS failure — fetch rejects before any response arrives
+      if (err.name === "TypeError" || err.message.toLowerCase().includes("failed to fetch")) {
+        return "Could not reach the server. Check your connection and try again.";
+      }
+      // Any other error with a message (e.g. JSON SyntaxError)
+      if (err.message) return err.message;
     }
     return fallback;
   }
