@@ -7,8 +7,6 @@ import { serveStatic } from "./static";
 import { createServer } from "http";
 
 // ─── Global crash guards ───────────────────────────────────────────────────────
-// Prevent unhandled rejections or uncaught exceptions from silently killing the
-// process before Railway's health check can reach /api/health.
 process.on("uncaughtException", (err) => {
   console.error("[FATAL] Uncaught exception:", err);
 });
@@ -19,7 +17,6 @@ process.on("unhandledRejection", (reason) => {
 const app = express();
 const httpServer = createServer(app);
 
-// Trust reverse proxy (Railway, Vercel, nginx) so req.secure and secure cookies work
 app.set("trust proxy", 1);
 
 declare module "http" {
@@ -35,8 +32,6 @@ declare module "express-session" {
 }
 
 // ─── CORS ─────────────────────────────────────────────────────────────────────
-// Production (Railway): set CORS_ORIGIN to your Vercel frontend URL.
-// Development: all origins allowed (Replit preview, localhost, etc.)
 const rawOrigins = process.env.CORS_ORIGIN;
 const allowedOrigins: string[] = rawOrigins
   ? rawOrigins.split(",").map((o) => o.trim())
@@ -45,13 +40,8 @@ const allowedOrigins: string[] = rawOrigins
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow requests with no Origin header — this covers Railway's health check
-      // (which comes from healthcheck.railway.app with no Origin header set) and
-      // server-to-server calls like curl, Postman, auto-processing, etc.
       if (!origin) return callback(null, true);
-      // In development (CORS_ORIGIN not set), allow every origin.
       if (allowedOrigins.length === 0) return callback(null, true);
-      // In production, only allow explicitly configured origins.
       if (allowedOrigins.includes(origin)) return callback(null, true);
       return callback(new Error(`CORS: origin "${origin}" is not allowed`));
     },
@@ -60,9 +50,6 @@ app.use(
 );
 
 // ─── Health check routes ───────────────────────────────────────────────────────
-// Registered FIRST — before session/db/auth middleware — so Railway's
-// healthcheck can reach them immediately on startup even if the database is
-// still connecting. Configure Railway's healthcheck path to /health or /api/health.
 app.get("/health", (_req: Request, res: Response) => {
   res.status(200).json({ status: "ok" });
 });
@@ -115,25 +102,7 @@ app.use(
 
 app.use(express.urlencoded({ extended: false }));
 
-// ─── Start HTTP server IMMEDIATELY ────────────────────────────────────────────
-// The server must be listening before Railway runs the health check.
-// Railway injects PORT — we use that value, falling back to 5000 for local dev.
-// Note: if PORT is not set on Railway, go to your service → Settings →
-// Networking → Generate Domain to make Railway inject the PORT variable.
-if (!process.env.VERCEL) {
-  const port = parseInt(process.env.PORT || "5000", 10);
-  const env = process.env.NODE_ENV || "development";
-  httpServer.listen(port, "0.0.0.0", () => {
-    log(`serving on port ${port}`);
-    log(`environment: ${env}`);
-    log(`health check: http://0.0.0.0:${port}/health`);
-    log(`redis: ${process.env.REDIS_URL ? "external" : "in-memory"}`);
-  });
-}
-
 // ─── Session ──────────────────────────────────────────────────────────────────
-// Cross-origin (split deploy): cookies need sameSite:"none" + secure:true
-// so the browser sends them from Vercel frontend to Railway backend.
 const isCrossOrigin = !!process.env.CORS_ORIGIN;
 
 let sessionMiddleware: express.RequestHandler;
@@ -160,7 +129,6 @@ try {
   });
 } catch (err) {
   console.error("[SESSION] Failed to create session store, using memory store:", err);
-  // Fallback to memory-based sessions (not persistent across restarts)
   sessionMiddleware = session({
     secret: process.env.SESSION_SECRET || "scraper-saas-secret-key-change-in-production",
     resave: false,
@@ -176,7 +144,10 @@ try {
 
 app.use(sessionMiddleware);
 
-// ─── Routes + Vite (fully async, after server is already listening) ────────────
+// ─── Routes + Vite, then listen ───────────────────────────────────────────────
+// All routes and middleware are registered BEFORE the server starts accepting
+// connections, eliminating the race window where Express v5 would return 405
+// for POST requests that arrived before route handlers were wired up.
 (async () => {
   try {
     const { registerRoutes } = await import("./routes");
@@ -207,6 +178,18 @@ app.use(sessionMiddleware);
     if (res.headersSent) return next(err);
     return res.status(status).json({ error: message });
   });
+
+  // Start listening only after ALL routes and middleware are wired up
+  if (!process.env.VERCEL) {
+    const port = parseInt(process.env.PORT || "5000", 10);
+    const env = process.env.NODE_ENV || "development";
+    httpServer.listen(port, "0.0.0.0", () => {
+      log(`serving on port ${port}`);
+      log(`environment: ${env}`);
+      log(`health check: http://0.0.0.0:${port}/health`);
+      log(`redis: ${process.env.REDIS_URL ? "external" : "in-memory"}`);
+    });
+  }
 })();
 
 // Default export used by Vercel's @vercel/node serverless handler (legacy mode)
