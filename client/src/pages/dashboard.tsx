@@ -409,9 +409,21 @@ function JobDetailPanel({
   job: Job | null; open: boolean; onClose: () => void; isMobile: boolean;
 }) {
   const { toast } = useToast();
+
+  const retryMutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/retry", { id: job?.id }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+      toast({ title: "Job queued for retry" });
+      onClose();
+    },
+    onError: () => toast({ title: "Failed to retry job", variant: "destructive" }),
+  });
+
   if (!job) return null;
 
   const resultStr = job.result ? JSON.stringify(job.result, null, 2) : null;
+
   const copy = (text: string, label = "Copied to clipboard") => {
     navigator.clipboard.writeText(text);
     toast({ title: label });
@@ -428,16 +440,6 @@ function JobDetailPanel({
     URL.revokeObjectURL(url);
     toast({ title: "Result downloaded" });
   };
-
-  const retryMutation = useMutation({
-    mutationFn: () => apiRequest("POST", "/api/retry", { id: job.id }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
-      toast({ title: "Job queued for retry" });
-      onClose();
-    },
-    onError: () => toast({ title: "Failed to retry job", variant: "destructive" }),
-  });
 
   const content = (
     <div className="flex flex-col gap-5 pt-2 pb-4">
