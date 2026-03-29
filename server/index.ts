@@ -5,6 +5,8 @@ import connectPgSimple from "connect-pg-simple";
 import { Pool } from "pg";
 import { serveStatic } from "./static";
 import { createServer } from "http";
+import { registerRoutes } from "./routes";
+import { startRecoveryWatchdog } from "./storage";
 
 // ─── Global crash guards ───────────────────────────────────────────────────────
 process.on("uncaughtException", (err) => {
@@ -109,6 +111,8 @@ app.use(
 app.use(express.urlencoded({ extended: false }));
 
 // ─── Session ──────────────────────────────────────────────────────────────────
+// isCrossOrigin = true when CORS_ORIGIN is set, meaning the frontend is on a
+// different domain (e.g. Vercel). In that case cookies must be SameSite=None;Secure.
 const isCrossOrigin = !!process.env.CORS_ORIGIN;
 
 let sessionMiddleware: express.RequestHandler;
@@ -150,43 +154,46 @@ try {
 
 app.use(sessionMiddleware);
 
-// ─── Routes + Vite, then listen ───────────────────────────────────────────────
-// All routes and middleware are registered BEFORE the server starts accepting
-// connections, eliminating the race window where Express v5 would return 405
-// for POST requests that arrived before route handlers were wired up.
+// ─── Routes + Vite/Static, then listen ────────────────────────────────────────
+// Uses static imports (not dynamic await import()) so the esbuild CJS bundle
+// correctly resolves all modules before any routes are registered.
 (async () => {
   try {
-    const { registerRoutes } = await import("./routes");
     await registerRoutes(httpServer, app);
     log("Routes registered");
-
-    if (process.env.NODE_ENV === "production") {
-      const { startRecoveryWatchdog } = await import("./storage");
-      startRecoveryWatchdog().catch((err) =>
-        console.error("[WATCHDOG] Failed to start:", err),
-      );
-      // In a split deployment (e.g. Vercel frontend + Railway backend), CORS_ORIGIN
-      // is set because the frontend lives on a different domain. In that case Railway
-      // is API-only — do NOT register the SPA catch-all (serveStatic) because it
-      // returns index.html for every unmatched path, which silently swallows API
-      // requests that arrive before routes are registered or for unknown endpoints.
-      // Only serve static files when the full app runs on a single host.
-      if (isCrossOrigin) {
-        log("split-deployment mode: static file serving disabled (frontend is on a separate host)");
-        app.use((_req: Request, res: Response) => {
-          res.status(404).json({ error: "Not found" });
-        });
-      } else {
-        serveStatic(app);
-      }
-    } else {
-      const { startRecoveryWatchdog } = await import("./storage");
-      await startRecoveryWatchdog();
-      const { setupVite } = await import("./vite");
-      await setupVite(httpServer, app);
-    }
   } catch (err) {
-    console.error("[INIT] Failed to initialize app:", err);
+    console.error("[INIT] Failed to register routes:", err);
+    // Register a fallback error route so the server doesn't silently swallow requests
+    app.use("/api", (_req: Request, res: Response) => {
+      res.status(500).json({ error: "Server failed to initialize routes. Check server logs." });
+    });
+  }
+
+  if (process.env.NODE_ENV === "production") {
+    startRecoveryWatchdog().catch((err) =>
+      console.error("[WATCHDOG] Failed to start:", err),
+    );
+
+    // In a split deployment (Vercel frontend + Railway backend), CORS_ORIGIN is set
+    // because the frontend lives on a different domain. Railway is API-only — skip
+    // the SPA catch-all (serveStatic) which would return index.html for every
+    // unmatched path and silently swallow API requests.
+    if (isCrossOrigin) {
+      log("split-deployment mode: static file serving disabled (frontend is on Vercel)");
+      app.use((_req: Request, res: Response) => {
+        res.status(404).json({ error: "Not found" });
+      });
+    } else {
+      serveStatic(app);
+    }
+  } else {
+    try {
+      await startRecoveryWatchdog();
+    } catch (err) {
+      console.error("[WATCHDOG] Failed to start:", err);
+    }
+    const { setupVite } = await import("./vite");
+    await setupVite(httpServer, app);
   }
 
   // Error handler — must be registered after all routes
