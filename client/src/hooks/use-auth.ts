@@ -3,7 +3,8 @@ import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useLocation } from "wouter";
 import type { Subscription } from "@shared/schema";
 
-const API_BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? "";
+const rawApiUrl = (import.meta.env.VITE_API_URL as string | undefined) ?? "";
+const API_BASE = rawApiUrl.replace(/\/+$/, "");
 
 export type AuthUser = {
   id: number;

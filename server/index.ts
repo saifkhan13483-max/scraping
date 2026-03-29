@@ -34,7 +34,7 @@ declare module "express-session" {
 // ─── CORS ─────────────────────────────────────────────────────────────────────
 const rawOrigins = process.env.CORS_ORIGIN;
 const allowedOrigins: string[] = rawOrigins
-  ? rawOrigins.split(",").map((o) => o.trim())
+  ? rawOrigins.split(",").map((o) => o.trim().replace(/\/+$/, ""))
   : [];
 
 const corsOptions: cors.CorsOptions = {

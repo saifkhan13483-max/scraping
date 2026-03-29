@@ -3,37 +3,53 @@ import { QueryClient, QueryFunction, QueryCache } from "@tanstack/react-query";
 // When the frontend (Vercel) and backend (Railway) are on different domains,
 // set VITE_API_URL in Vercel to your Railway backend URL (e.g. https://scrapercloud.up.railway.app).
 // In local dev and monorepo deployments, leave it unset — relative paths are used.
-const API_BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? "";
+// Strip trailing slash to prevent double-slash URLs like https://api.example.com//api/login
+const rawApiUrl = (import.meta.env.VITE_API_URL as string | undefined) ?? "";
+const API_BASE = rawApiUrl.replace(/\/+$/, "");
 
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
-    // 405 from Vercel's static host means VITE_API_URL is not set — the browser
-    // is POSTing to Vercel itself (which only serves static files) instead of the
-    // Railway backend. Serve a clear actionable message instead of the raw "405:".
-    if (res.status === 405 && !import.meta.env.VITE_API_URL) {
+    // 405 Method Not Allowed — most common causes:
+    //  1. VITE_API_URL is not set → browser POSTs to Vercel's static host (no backend)
+    //  2. VITE_API_URL has a trailing slash → double-slash URL doesn't match any route
+    //  3. VITE_API_URL points to the wrong Railway URL
+    if (res.status === 405) {
+      const apiUrl = import.meta.env.VITE_API_URL;
+      if (!apiUrl) {
+        console.error(
+          "[API] 405 on", res.url,
+          "— VITE_API_URL is not set. Add it in Vercel → Settings → Environment Variables, pointing to your Railway backend URL, then redeploy."
+        );
+        throw new Error(
+          "Cannot reach the API server. Set the VITE_API_URL environment variable in Vercel to your Railway backend URL, then redeploy."
+        );
+      } else {
+        console.error(
+          "[API] 405 on", res.url,
+          `— VITE_API_URL is set to "${apiUrl}". Check: (1) no trailing slash, (2) correct Railway domain, (3) CORS_ORIGIN on Railway matches your Vercel domain exactly.`
+        );
+        throw new Error(
+          `API server returned 405. Verify VITE_API_URL ("${apiUrl}") has no trailing slash and matches your Railway backend URL. Also confirm CORS_ORIGIN on Railway is set to your Vercel domain (e.g. https://your-app.vercel.app).`
+        );
+      }
+    }
+
+    // Detect when Vercel (or any static host) returns HTML instead of JSON for
+    // an API route. This happens when VITE_API_URL is not set and Vercel's SPA
+    // catch-all rewrite intercepts /api/* requests, serving index.html (200 OK).
+    const contentType = res.headers.get("content-type") ?? "";
+    if (contentType.includes("text/html")) {
       console.error(
-        "[API] 405 on", res.url,
-        "— VITE_API_URL is not set. Add it in Vercel → Settings → Environment Variables, pointing to your Railway backend URL."
+        "[API] HTML response received for", res.url,
+        "— VITE_API_URL is likely not set on Vercel. Set it to your Railway backend URL and redeploy."
       );
       throw new Error(
-        "Cannot reach the API server. If this is deployed on Vercel, set the VITE_API_URL environment variable to your Railway backend URL and redeploy."
+        "Cannot reach the API server. Set the VITE_API_URL environment variable in Vercel to your Railway backend URL, then redeploy."
       );
     }
+
     const text = (await res.text()) || res.statusText;
     throw new Error(`${res.status}: ${text}`);
-  }
-  // Detect when Vercel (or any static host) returns HTML instead of JSON for
-  // an API route. This happens when VITE_API_URL is not set and Vercel's SPA
-  // catch-all rewrite intercepts /api/* requests, serving index.html (200 OK).
-  const contentType = res.headers.get("content-type") ?? "";
-  if (contentType.includes("text/html")) {
-    console.error(
-      "[API] HTML response received for", res.url,
-      "— VITE_API_URL is likely not set on Vercel. Set it to your Railway backend URL."
-    );
-    throw new Error(
-      "Cannot reach the API server. If this is deployed on Vercel, set the VITE_API_URL environment variable to your Railway backend URL and redeploy."
-    );
   }
 }
 
