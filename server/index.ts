@@ -165,7 +165,20 @@ app.use(sessionMiddleware);
       startRecoveryWatchdog().catch((err) =>
         console.error("[WATCHDOG] Failed to start:", err),
       );
-      serveStatic(app);
+      // In a split deployment (e.g. Vercel frontend + Railway backend), CORS_ORIGIN
+      // is set because the frontend lives on a different domain. In that case Railway
+      // is API-only — do NOT register the SPA catch-all (serveStatic) because it
+      // returns index.html for every unmatched path, which silently swallows API
+      // requests that arrive before routes are registered or for unknown endpoints.
+      // Only serve static files when the full app runs on a single host.
+      if (isCrossOrigin) {
+        log("split-deployment mode: static file serving disabled (frontend is on a separate host)");
+        app.use((_req: Request, res: Response) => {
+          res.status(404).json({ error: "Not found" });
+        });
+      } else {
+        serveStatic(app);
+      }
     } else {
       const { startRecoveryWatchdog } = await import("./storage");
       await startRecoveryWatchdog();
