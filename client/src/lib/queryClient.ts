@@ -8,6 +8,26 @@ const rawApiUrl = (import.meta.env.VITE_API_URL as string | undefined) ?? "";
 const API_BASE = rawApiUrl.replace(/\/+$/, "");
 
 async function throwIfResNotOk(res: Response) {
+  // Check for HTML response first (before checking res.ok) because the Railway
+  // SPA catch-all can return index.html with a 200 OK status, which looks
+  // "successful" but is not a valid API response.
+  const contentType = res.headers.get("content-type") ?? "";
+  if (contentType.includes("text/html")) {
+    const apiUrl = import.meta.env.VITE_API_URL;
+    console.error(
+      "[API] HTML response received for", res.url,
+      `— The backend returned an HTML page instead of JSON. This usually means the API route is not registered on the server. ` +
+      (apiUrl
+        ? `VITE_API_URL is "${apiUrl}". Make sure the latest backend code is deployed on Railway.`
+        : "VITE_API_URL is not set — set it in Vercel to your Railway backend URL and redeploy.")
+    );
+    throw new Error(
+      apiUrl
+        ? "The API server returned an HTML page instead of JSON. The backend code on Railway may be outdated — redeploy Railway with the latest code and try again."
+        : "Cannot reach the API server. Set the VITE_API_URL environment variable in Vercel to your Railway backend URL, then redeploy."
+    );
+  }
+
   if (!res.ok) {
     // 405 Method Not Allowed — most common causes:
     //  1. VITE_API_URL is not set → browser POSTs to Vercel's static host (no backend)
@@ -32,20 +52,6 @@ async function throwIfResNotOk(res: Response) {
           `API server returned 405. Verify VITE_API_URL ("${apiUrl}") has no trailing slash and matches your Railway backend URL. Also confirm CORS_ORIGIN on Railway is set to your Vercel domain (e.g. https://your-app.vercel.app).`
         );
       }
-    }
-
-    // Detect when Vercel (or any static host) returns HTML instead of JSON for
-    // an API route. This happens when VITE_API_URL is not set and Vercel's SPA
-    // catch-all rewrite intercepts /api/* requests, serving index.html (200 OK).
-    const contentType = res.headers.get("content-type") ?? "";
-    if (contentType.includes("text/html")) {
-      console.error(
-        "[API] HTML response received for", res.url,
-        "— VITE_API_URL is likely not set on Vercel. Set it to your Railway backend URL and redeploy."
-      );
-      throw new Error(
-        "Cannot reach the API server. Set the VITE_API_URL environment variable in Vercel to your Railway backend URL, then redeploy."
-      );
     }
 
     const text = (await res.text()) || res.statusText;
