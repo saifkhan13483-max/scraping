@@ -324,11 +324,15 @@ export class AppStorage implements IStorage {
     const resetAt = new Date();
     resetAt.setMonth(resetAt.getMonth() + 1);
 
+    const ownerEmail = (process.env.OWNER_EMAIL ?? "saifkhan16382@gmail.com").toLowerCase().trim();
+    const isAdmin = data.email.toLowerCase().trim() === ownerEmail;
+
     const user = await db.transaction(async (tx) => {
       const [newUser] = await tx.insert(users).values({
         email: data.email.toLowerCase().trim(),
         name: data.name.trim(),
         passwordHash,
+        isAdmin,
       }).returning();
 
       await tx.insert(subscriptions).values({
