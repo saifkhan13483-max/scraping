@@ -1,6 +1,6 @@
 import { build as esbuild } from "esbuild";
 import { build as viteBuild } from "vite";
-import { rm, readFile } from "fs/promises";
+import { rm, readFile, copyFile } from "fs/promises";
 
 // server deps to bundle to reduce openat(2) syscalls
 // which helps cold start times
@@ -45,6 +45,15 @@ async function buildAll() {
     external: externals,
     logLevel: "info",
   });
+
+  // connect-pg-simple reads table.sql relative to its __dirname at runtime.
+  // When esbuild bundles it into dist/index.cjs, __dirname resolves to dist/,
+  // so we must copy the file there so the session store can create its table.
+  console.log("copying connect-pg-simple/table.sql → dist/table.sql...");
+  await copyFile(
+    "node_modules/connect-pg-simple/table.sql",
+    "dist/table.sql",
+  );
 }
 
 buildAll().catch((err) => {
