@@ -8,6 +8,8 @@ import { createServer } from "http";
 import { registerRoutes } from "./routes";
 import { startRecoveryWatchdog } from "./storage";
 import { applySecurityMiddleware, errorHandler } from "./security";
+import { runMigrations } from "./db";
+import { redis, KEYS } from "./redis";
 
 // ─── Global crash guards ───────────────────────────────────────────────────────
 process.on("uncaughtException", (err) => {
@@ -56,7 +58,7 @@ const corsOptions: cors.CorsOptions = {
   },
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "x-api-key"],
+  allowedHeaders: ["Content-Type", "Authorization", "x-api-key", "X-CSRF-Token"],
 };
 
 app.use(cors(corsOptions));
@@ -168,70 +170,129 @@ try {
 
 app.use(sessionMiddleware);
 
+// ─── Redis backfill helper ─────────────────────────────────────────────────────
+
+/**
+ * Scan all `job:*` keys (excluding helper keys) and populate any missing
+ * per-user `user:{userId}:jobs` sorted set entries.
+ * This is a one-time idempotent backfill for pre-existing data.
+ */
+async function backfillRedisSecondaryIndexes() {
+  console.log("[BACKFILL] Scanning Redis for orphan job keys…");
+  let cursor = "0";
+  let populated = 0;
+  let skipped = 0;
+
+  try {
+    do {
+      const [next, keys] = await redis.scan(cursor, "MATCH", "job:*", "COUNT", 100);
+      cursor = next;
+
+      for (const key of keys) {
+        // Skip non-hash keys like "job:abc:started_at"
+        if (key.split(":").length > 2) { skipped++; continue; }
+
+        const job = await redis.hgetall(key);
+        if (!job || !job.userId || !job.id || !job.createdAt) { skipped++; continue; }
+
+        const userId = parseInt(job.userId, 10);
+        if (isNaN(userId)) { skipped++; continue; }
+
+        const score = new Date(job.createdAt).getTime();
+        const setKey = KEYS.userJobs(userId);
+
+        // ZADD NX — only add if member doesn't already exist
+        // ioredis ZADD with NX: zadd(key, 'NX', score, member)
+        await (redis as any).zadd(setKey, "NX", score, job.id);
+        populated++;
+      }
+    } while (cursor !== "0");
+
+    console.log(`[BACKFILL] Complete — indexed: ${populated}, skipped: ${skipped}`);
+  } catch (err) {
+    console.error("[BACKFILL] Failed:", (err as Error).message);
+  }
+}
+
+// ─── Owner admin grant ────────────────────────────────────────────────────────
+
+async function ensureOwnerAdmin() {
+  try {
+    const { db } = await import("./db");
+    const { users } = await import("@shared/schema");
+    const { eq } = await import("drizzle-orm");
+
+    const ownerEmail = (process.env.OWNER_EMAIL ?? "saifkhan16382@gmail.com").toLowerCase().trim();
+    const [updated] = await db
+      .update(users)
+      .set({ isAdmin: true })
+      .where(eq(users.email, ownerEmail))
+      .returning({ id: users.id, email: users.email });
+
+    if (updated) {
+      console.log(`[INIT] Admin granted to owner: ${updated.email} (id=${updated.id})`);
+    } else {
+      console.log(`[INIT] Owner not yet registered or already admin: ${ownerEmail}`);
+    }
+  } catch (err) {
+    console.error("[INIT] Owner admin grant failed:", (err as Error).message);
+  }
+}
+
+// ─── Migration: hash any legacy plain-text API keys ──────────────────────────
+
+async function migrateLegacyApiKeys() {
+  try {
+    const { pool } = await import("./db");
+    const { createHash } = await import("crypto");
+
+    // Only proceed if the old 'key' column still exists
+    const { rows: colCheck } = await pool.query(
+      `SELECT 1 FROM information_schema.columns
+       WHERE table_name = 'api_keys' AND column_name = 'key'`
+    );
+    if (!colCheck.length) return; // Already migrated
+
+    const { rows: legacyKeys } = await pool.query(
+      "SELECT id, key FROM api_keys WHERE key IS NOT NULL AND key_hash IS NULL"
+    );
+
+    for (const row of legacyKeys as Array<{ id: number; key: string }>) {
+      const hash = createHash("sha256").update(row.key).digest("hex");
+      const prefix = row.key.slice(0, 10);
+      await pool.query(
+        "UPDATE api_keys SET key_hash = $1, key_prefix = $2 WHERE id = $3",
+        [hash, prefix, row.id]
+      );
+    }
+
+    if (legacyKeys.length > 0) {
+      console.log(`[INIT] Hashed ${legacyKeys.length} legacy API key(s)`);
+    }
+
+    await pool.query("ALTER TABLE api_keys DROP COLUMN IF EXISTS key");
+  } catch (err) {
+    console.error("[INIT] Legacy API key migration failed:", (err as Error).message);
+  }
+}
+
 // ─── Routes + Vite/Static, then listen ────────────────────────────────────────
 (async () => {
-  // ── Startup migrations (idempotent) ────────────────────────────────────────
+  // 1. Run Drizzle schema migrations
   try {
-    const migPool = new Pool({ connectionString: process.env.DATABASE_URL });
-    await migPool.query(
-      "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin boolean NOT NULL DEFAULT false"
-    );
-    // API key security upgrade: add new columns if missing
-    await migPool.query(`
-      ALTER TABLE api_keys
-        ADD COLUMN IF NOT EXISTS key_hash varchar(64),
-        ADD COLUMN IF NOT EXISTS key_prefix varchar(12),
-        ADD COLUMN IF NOT EXISTS scope varchar(32) NOT NULL DEFAULT 'full_access',
-        ADD COLUMN IF NOT EXISTS expires_at timestamp,
-        ADD COLUMN IF NOT EXISTS last_used_at timestamp
-    `);
-    // Migrate any legacy plain-text keys only if the 'key' column still exists
-    const keyColExists = await migPool.query(`
-      SELECT 1 FROM information_schema.columns
-      WHERE table_name = 'api_keys' AND column_name = 'key'
-    `);
-    if (keyColExists.rowCount && keyColExists.rowCount > 0) {
-      const legacyKeys = await migPool.query(
-        "SELECT id, key FROM api_keys WHERE key IS NOT NULL AND key_hash IS NULL"
-      );
-      if (legacyKeys.rowCount && legacyKeys.rowCount > 0) {
-        const { createHash } = await import("crypto");
-        for (const row of legacyKeys.rows as Array<{ id: number; key: string }>) {
-          const hash = createHash("sha256").update(row.key).digest("hex");
-          const prefix = row.key.slice(0, 10);
-          await migPool.query(
-            "UPDATE api_keys SET key_hash = $1, key_prefix = $2 WHERE id = $3",
-            [hash, prefix, row.id]
-          );
-        }
-        console.log(`[MIGRATE] Hashed ${legacyKeys.rowCount} legacy API key(s)`);
-      }
-      await migPool.query("ALTER TABLE api_keys DROP COLUMN key");
-    }
-    await migPool.end();
-    console.log("[MIGRATE] Schema up to date");
+    await runMigrations();
   } catch (err) {
-    console.error("[MIGRATE] Startup migration failed:", (err as Error).message);
+    console.error("[INIT] Drizzle migrations failed — continuing with existing schema:", (err as Error).message);
   }
 
-  // ── Ensure owner email always has admin rights ──────────────────────────────
-  try {
-    const ownerEmail = (process.env.OWNER_EMAIL ?? "saifkhan16382@gmail.com").toLowerCase().trim();
-    const ownerPool = new Pool({ connectionString: process.env.DATABASE_URL });
-    const result = await ownerPool.query(
-      "UPDATE users SET is_admin = true WHERE email = $1 AND is_admin = false RETURNING id, email",
-      [ownerEmail]
-    );
-    if (result.rowCount && result.rowCount > 0) {
-      console.log(`[MIGRATE] Admin granted to owner: ${result.rows[0].email} (id=${result.rows[0].id})`);
-    } else {
-      console.log(`[MIGRATE] Owner admin check: ${ownerEmail} already admin or not yet registered`);
-    }
-    await ownerPool.end();
-  } catch (err) {
-    console.error("[MIGRATE] Owner admin grant failed:", (err as Error).message);
-  }
+  // 2. Data migrations (idempotent, safe to run every startup)
+  await migrateLegacyApiKeys();
+  await ensureOwnerAdmin();
 
+  // 3. Backfill Redis secondary indexes for existing jobs
+  await backfillRedisSecondaryIndexes();
+
+  // 4. Register API routes
   try {
     await registerRoutes(httpServer, app);
     log("Routes registered");
@@ -242,6 +303,7 @@ app.use(sessionMiddleware);
     });
   }
 
+  // 5. Vite / Static
   if (process.env.NODE_ENV === "production") {
     startRecoveryWatchdog().catch((err) =>
       console.error("[WATCHDOG] Failed to start:", err),
@@ -266,7 +328,7 @@ app.use(sessionMiddleware);
     await setupVite(httpServer, app);
   }
 
-  // ── Centralized error handler (must be last) ───────────────────────────────
+  // 6. Centralized error handler (must be last)
   app.use(errorHandler);
 
   if (!process.env.VERCEL) {

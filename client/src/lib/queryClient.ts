@@ -22,6 +22,35 @@ if (rawApiUrl) {
   }
 }
 
+// ─── CSRF token management ────────────────────────────────────────────────────
+
+let _csrfToken: string | null = null;
+
+/**
+ * Fetch and cache the CSRF token from the server.
+ * The token is included in all state-changing requests as X-CSRF-Token.
+ * Cached for the page lifetime; refreshed after 401/403 CSRF errors.
+ */
+async function getCsrfToken(): Promise<string | null> {
+  if (_csrfToken) return _csrfToken;
+  try {
+    const res = await fetch(`${API_BASE}/api/csrf-token`, { credentials: "include" });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { csrfToken?: string };
+    _csrfToken = data.csrfToken ?? null;
+    return _csrfToken;
+  } catch {
+    return null;
+  }
+}
+
+/** Invalidate the cached CSRF token (called on CSRF-related errors). */
+function invalidateCsrfToken() {
+  _csrfToken = null;
+}
+
+// ─── Error handling ───────────────────────────────────────────────────────────
+
 async function throwIfResNotOk(res: Response) {
   // Check for HTML response first (before checking res.ok) because the Railway
   // SPA catch-all can return index.html with a 200 OK status, which looks
@@ -44,10 +73,11 @@ async function throwIfResNotOk(res: Response) {
   }
 
   if (!res.ok) {
-    // 405 Method Not Allowed — most common causes:
-    //  1. VITE_API_URL is not set → browser POSTs to Vercel's static host (no backend)
-    //  2. VITE_API_URL has a trailing slash → double-slash URL doesn't match any route
-    //  3. VITE_API_URL points to the wrong Railway URL
+    // Invalidate CSRF token if we get a 403 — the token may have expired
+    if (res.status === 403) {
+      invalidateCsrfToken();
+    }
+
     if (res.status === 405) {
       const apiUrl = import.meta.env.VITE_API_URL;
       if (!apiUrl) {
@@ -69,8 +99,6 @@ async function throwIfResNotOk(res: Response) {
       }
     }
 
-    // 404 in cross-origin split deployment usually means VITE_API_URL is wrong
-    // (e.g. set to https://backend.up.railway.app/api instead of https://backend.up.railway.app)
     if (res.status === 404) {
       const apiUrl = import.meta.env.VITE_API_URL;
       if (apiUrl) {
@@ -86,14 +114,27 @@ async function throwIfResNotOk(res: Response) {
   }
 }
 
+// ─── API request helper ───────────────────────────────────────────────────────
+
 export async function apiRequest(
   method: string,
   url: string,
   data?: unknown | undefined,
 ): Promise<Response> {
+  const upperMethod = method.toUpperCase();
+
+  // Include CSRF token for all state-changing requests
+  const headers: Record<string, string> = {};
+  if (data) headers["Content-Type"] = "application/json";
+
+  if (upperMethod !== "GET" && upperMethod !== "HEAD" && upperMethod !== "OPTIONS") {
+    const csrfToken = await getCsrfToken();
+    if (csrfToken) headers["X-CSRF-Token"] = csrfToken;
+  }
+
   const res = await fetch(`${API_BASE}${url}`, {
-    method,
-    headers: data ? { "Content-Type": "application/json" } : {},
+    method: upperMethod,
+    headers,
     body: data ? JSON.stringify(data) : undefined,
     credentials: "include",
   });

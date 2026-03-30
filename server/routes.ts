@@ -5,68 +5,105 @@ import { scrapeUrl } from "./scraper";
 import { insertJobSchema, submitResultSchema, failJobSchema, retryJobSchema, insertUserSchema, createApiKeySchema, PLAN_CONFIG } from "@shared/schema";
 import { ZodError, z } from "zod";
 import { requireAuth, requireAdmin, requireScope, resolveUser } from "./auth";
-import { sanitizeBody } from "./security";
+import { sanitizeBody, csrfProtection, generateToken } from "./security";
 import rateLimit from "express-rate-limit";
+import { createRedisStore } from "./rate-limit-store";
 import { randomBytes } from "crypto";
 
 // One-time secret generated at startup to protect the internal process endpoint.
 const INTERNAL_PROCESS_SECRET = randomBytes(32).toString("hex");
 
-// ─── Rate limiters ─────────────────────────────────────────────────────────────
+// ─── Rate limiters (Redis-backed) ─────────────────────────────────────────────
+
+const GLOBAL_WINDOW = 15 * 60 * 1000;   // 15 min
+const LOGIN_WINDOW  = 15 * 60 * 1000;   // 15 min
+const REG_WINDOW    = 60 * 60 * 1000;   // 1 hour
+const JOB_WINDOW    = 60 * 1000;         // 1 min
 
 const globalLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
+  windowMs: GLOBAL_WINDOW,
   max: 300,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: "Too many requests, please try again later." },
   skip: (req) => req.path === "/api/health" || req.path === "/health",
+  store: createRedisStore("global:", GLOBAL_WINDOW),
 });
 
-// Stricter auth limits: 5 attempts per 15 minutes for login, 3/hour for register
+// 5 login attempts per 15 minutes
 const loginLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
+  windowMs: LOGIN_WINDOW,
   max: 5,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: "Too many login attempts. Please wait before trying again." },
+  store: createRedisStore("auth:login:", LOGIN_WINDOW),
 });
 
+// 3 registration attempts per hour
 const registerLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000,
+  windowMs: REG_WINDOW,
   max: 3,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: "Too many registration attempts. Please try again later." },
+  store: createRedisStore("auth:register:", REG_WINDOW),
 });
 
+// Pre-built per-plan limiters (reused across requests to avoid store churn).
+// keyGenerator uses userId only — requireAuth always runs before these so
+// resolvedUserId is always set. This avoids the IPv6 bypass concern with req.ip.
+const planLimiters: Record<string, ReturnType<typeof rateLimit>> = {
+  free: rateLimit({
+    windowMs: JOB_WINDOW,
+    max: PLAN_CONFIG.free.jobsPerMinute,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => `job:${req.resolvedUserId ?? "anon"}`,
+    validate: { ipKeyGenerator: false },
+    message: { error: `Rate limit exceeded. Your plan allows ${PLAN_CONFIG.free.jobsPerMinute} job submissions per minute.` },
+    store: createRedisStore("jobs:free:", JOB_WINDOW),
+  }),
+  pro: rateLimit({
+    windowMs: JOB_WINDOW,
+    max: PLAN_CONFIG.pro.jobsPerMinute,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => `job:${req.resolvedUserId ?? "anon"}`,
+    validate: { ipKeyGenerator: false },
+    message: { error: `Rate limit exceeded. Your plan allows ${PLAN_CONFIG.pro.jobsPerMinute} job submissions per minute.` },
+    store: createRedisStore("jobs:pro:", JOB_WINDOW),
+  }),
+  business: rateLimit({
+    windowMs: JOB_WINDOW,
+    max: PLAN_CONFIG.business.jobsPerMinute,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => `job:${req.resolvedUserId ?? "anon"}`,
+    validate: { ipKeyGenerator: false },
+    message: { error: `Rate limit exceeded. Your plan allows ${PLAN_CONFIG.business.jobsPerMinute} job submissions per minute.` },
+    store: createRedisStore("jobs:business:", JOB_WINDOW),
+  }),
+};
+
 /**
- * Dynamic job rate limiter based on the user's plan.
- * Free: 10/min, Pro: 60/min, Business: 200/min
+ * Dynamic job rate limiter — picks the correct pre-built limiter for the user's plan.
+ * Free: 10/min · Pro: 60/min · Business: 200/min
  */
 async function planBasedJobLimiter(req: Request, res: Response, next: NextFunction) {
   const userId = req.session?.userId ?? req.resolvedUserId;
-  let max = PLAN_CONFIG.free.jobsPerMinute; // default to free tier
+  let plan: "free" | "pro" | "business" = "free";
 
   if (userId) {
     try {
       const quota = await storage.checkQuota(userId);
-      max = PLAN_CONFIG[quota.plan]?.jobsPerMinute ?? max;
+      plan = quota.plan as "free" | "pro" | "business";
     } catch {
       // fall through with free-tier limit
     }
   }
 
-  rateLimit({
-    windowMs: 60 * 1000,
-    max,
-    standardHeaders: true,
-    legacyHeaders: false,
-    keyGenerator: (r) => `job:${userId ?? r.ip}`,
-    message: {
-      error: `Rate limit exceeded. Your plan allows ${max} job submissions per minute.`,
-    },
-  })(req, res, next);
+  return planLimiters[plan](req, res, next);
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
@@ -83,6 +120,17 @@ function isValidUrl(url: string): boolean {
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
   app.use(globalLimiter);
   app.use(resolveUser);
+
+  // ── CSRF token endpoint ──────────────────────────────────────────────────────
+  // The SPA calls this on load to get a CSRF token, which it then includes as
+  // an X-CSRF-Token header on all state-changing (non-GET) requests.
+  app.get("/api/csrf-token", (req: Request, res: Response) => {
+    return res.json({ csrfToken: generateToken(req, res) });
+  });
+
+  // ── Apply CSRF protection to all subsequent routes ──────────────────────────
+  // API key requests and Stripe webhooks are excluded (see csrfProtection fn).
+  app.use(csrfProtection);
 
   // ── Auth Routes ─────────────────────────────────────────────────────────────
 

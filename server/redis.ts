@@ -3,12 +3,23 @@ import Redis from "ioredis";
 const rawUrl = process.env.REDIS_URL?.trim();
 
 // ─── In-memory fallback ───────────────────────────────────────────────────────
-// Used when REDIS_URL is absent, invalid, or the Redis client fails to init.
 
 function makeInMemoryRedis(): Redis {
   const store = new Map<string, string>();
   const lists = new Map<string, string[]>();
   const sortedSets = new Map<string, Array<{ score: number; member: string }>>();
+  const expiries = new Map<string, number>(); // key → expiry timestamp (ms)
+
+  function isExpired(key: string): boolean {
+    const exp = expiries.get(key);
+    if (exp === undefined) return false;
+    if (Date.now() > exp) {
+      store.delete(key);
+      expiries.delete(key);
+      return true;
+    }
+    return false;
+  }
 
   const client = {
     pipeline: () => {
@@ -40,11 +51,13 @@ function makeInMemoryRedis(): Redis {
             store.delete(key);
             lists.delete(key);
             sortedSets.delete(key);
+            expiries.delete(key);
           });
           return pipe;
         },
         hgetall: (key: string) => {
           ops.push(async () => {
+            if (isExpired(key)) return {};
             const val = store.get(key);
             return val ? JSON.parse(val) : {};
           });
@@ -71,6 +84,24 @@ function makeInMemoryRedis(): Redis {
           });
           return pipe;
         },
+        incr: (key: string) => {
+          ops.push(async () => {
+            if (isExpired(key)) store.delete(key);
+            const val = parseInt(store.get(key) ?? "0", 10) + 1;
+            store.set(key, String(val));
+            return val;
+          });
+          return pipe;
+        },
+        pttl: (key: string) => {
+          ops.push(async () => {
+            if (isExpired(key)) return -2;
+            const exp = expiries.get(key);
+            if (exp === undefined) return -1;
+            return Math.max(0, exp - Date.now());
+          });
+          return pipe;
+        },
         exec: async () => {
           const results: Array<[null, any]> = [];
           for (const op of ops) results.push([null, await op()]);
@@ -84,6 +115,7 @@ function makeInMemoryRedis(): Redis {
       store.set(key, JSON.stringify({ ...existing, ...obj }));
     },
     hgetall: async (key: string) => {
+      if (isExpired(key)) return {};
       const val = store.get(key);
       return val ? JSON.parse(val) : {};
     },
@@ -106,19 +138,49 @@ function makeInMemoryRedis(): Redis {
     lrem: async (key: string, _count: number, val: string) => {
       lists.set(key, (lists.get(key) ?? []).filter((v) => v !== val));
     },
-    get: async (key: string) => store.get(key) ?? null,
+    get: async (key: string) => {
+      if (isExpired(key)) return null;
+      return store.get(key) ?? null;
+    },
     set: async (key: string, val: string, ..._args: any[]) => { store.set(key, val); },
     del: async (key: string) => {
       store.delete(key);
       lists.delete(key);
       sortedSets.delete(key);
+      expiries.delete(key);
     },
-    exists: async (key: string) => (store.has(key) ? 1 : 0),
+    exists: async (key: string) => {
+      if (isExpired(key)) return 0;
+      return store.has(key) ? 1 : 0;
+    },
+    incr: async (key: string): Promise<number> => {
+      if (isExpired(key)) store.delete(key);
+      const val = parseInt(store.get(key) ?? "0", 10) + 1;
+      store.set(key, String(val));
+      return val;
+    },
+    decr: async (key: string): Promise<number> => {
+      if (isExpired(key)) store.delete(key);
+      const val = parseInt(store.get(key) ?? "0", 10) - 1;
+      store.set(key, String(val));
+      return val;
+    },
+    expire: async (key: string, seconds: number): Promise<number> => {
+      if (!store.has(key)) return 0;
+      expiries.set(key, Date.now() + seconds * 1000);
+      return 1;
+    },
+    pttl: async (key: string): Promise<number> => {
+      if (isExpired(key)) return -2;
+      const exp = expiries.get(key);
+      if (exp === undefined) return -1;
+      return Math.max(0, exp - Date.now());
+    },
     scan: async (_cursor: string, _matchKw: string, pattern: string, _countKw: string, _num: number) => {
       const regex = new RegExp(
         "^" + pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".") + "$"
       );
-      return ["0", Array.from(store.keys()).filter((k) => regex.test(k))];
+      return ["0", Array.from(store.keys()).filter((k) => !isExpired(k) && regex.test(k))];
     },
     zadd: async (key: string, score: number, member: string) => {
       const set = sortedSets.get(key) ?? [];
@@ -156,6 +218,7 @@ function makeInMemoryRedis(): Redis {
 // ─── Redis client initialisation ─────────────────────────────────────────────
 
 let redis: Redis;
+export let isExternalRedis = false;
 
 if (rawUrl && /^rediss?(\+tls)?:\/\//i.test(rawUrl)) {
   console.log(`[Redis] Connecting to ${rawUrl.replace(/:\/\/[^@]*@/, "://<credentials>@")}`);
@@ -170,6 +233,7 @@ if (rawUrl && /^rediss?(\+tls)?:\/\//i.test(rawUrl)) {
     redis.on("ready",   () => console.log("[Redis] Ready"));
     redis.on("error",   (err) => console.error("[Redis] Error:", err.message));
     redis.on("close",   () => console.warn("[Redis] Connection closed"));
+    isExternalRedis = true;
   } catch (err) {
     console.error("[Redis] Client init failed — falling back to in-memory store:", err);
     redis = makeInMemoryRedis();
@@ -187,19 +251,17 @@ export { redis };
 
 export const KEYS = {
   job: (id: string) => `job:${id}`,
-  // Priority queues — worker always processes high → normal → low
   queueHigh: "queue:high",
   queueNormal: "queue:normal",
   queueLow: "queue:low",
-  // Delayed jobs sorted set (score = runAt timestamp ms)
   queueDelayed: "queue:delayed",
-  // Processing queue (jobs handed off to a worker)
   queueProcessing: "queue:processing",
-  // Legacy alias kept for the watchdog
   queuePending: "queue:normal",
   jobTimestamp: (id: string) => `job:${id}:started_at`,
-  // Per-user job index: sorted set scored by creation timestamp
+  /** Per-user job index: sorted set scored by job creation timestamp */
   userJobs: (userId: number) => `user:${userId}:jobs`,
+  /** Rate limiting prefix */
+  rateLimit: (key: string) => `rl:${key}`,
 } as const;
 
 export function priorityQueue(priority: "high" | "normal" | "low"): string {
