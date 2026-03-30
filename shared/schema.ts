@@ -61,23 +61,32 @@ export type User = typeof users.$inferSelect;
 
 export type PlanType = "free" | "pro" | "business";
 
-export const PLAN_CONFIG: Record<PlanType, { label: string; price: number; jobLimit: number; features: string[] }> = {
+export const PLAN_CONFIG: Record<PlanType, {
+  label: string;
+  price: number;
+  jobLimit: number;
+  jobsPerMinute: number;
+  features: string[];
+}> = {
   free: {
     label: "Free",
     price: 0,
     jobLimit: 50,
+    jobsPerMinute: 10,
     features: ["50 scraping jobs/month", "Standard speed", "JSON results", "Community support"],
   },
   pro: {
     label: "Pro",
     price: 29,
     jobLimit: 500,
+    jobsPerMinute: 60,
     features: ["500 scraping jobs/month", "Priority processing", "JSON results", "API key access", "Email support"],
   },
   business: {
     label: "Business",
     price: 99,
     jobLimit: 999999,
+    jobsPerMinute: 200,
     features: ["Unlimited scraping jobs", "Fastest processing", "JSON results", "API key access", "Dedicated support", "Team access"],
   },
 };
@@ -97,13 +106,25 @@ export type Subscription = typeof subscriptions.$inferSelect;
 
 // ─── API Keys ────────────────────────────────────────────────────────────────
 
+export type ApiKeyScope = "read" | "create_jobs" | "full_access";
+
 export const apiKeys = pgTable("api_keys", {
   id: serial("id").primaryKey(),
   userId: integer("user_id").notNull().references(() => users.id),
-  key: varchar("key", { length: 64 }).notNull().unique(),
+  keyHash: varchar("key_hash", { length: 64 }).notNull().unique(),
+  keyPrefix: varchar("key_prefix", { length: 12 }).notNull(),
   name: varchar("name", { length: 255 }).notNull(),
+  scope: varchar("scope", { enum: ["read", "create_jobs", "full_access"] }).notNull().default("full_access"),
+  expiresAt: timestamp("expires_at"),
+  lastUsedAt: timestamp("last_used_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
-export const createApiKeySchema = z.object({ name: z.string().min(1, "Name is required") });
+export const createApiKeySchema = z.object({
+  name: z.string().min(1, "Name is required").max(255),
+  scope: z.enum(["read", "create_jobs", "full_access"]).default("full_access"),
+  expiresAt: z.string().datetime().optional(),
+});
+
 export type ApiKey = typeof apiKeys.$inferSelect;
+export type ApiKeyWithSecret = ApiKey & { secret: string };

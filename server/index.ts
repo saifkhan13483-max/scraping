@@ -7,6 +7,7 @@ import { serveStatic } from "./static";
 import { createServer } from "http";
 import { registerRoutes } from "./routes";
 import { startRecoveryWatchdog } from "./storage";
+import { applySecurityMiddleware, errorHandler } from "./security";
 
 // ─── Global crash guards ───────────────────────────────────────────────────────
 process.on("uncaughtException", (err) => {
@@ -50,7 +51,7 @@ const corsOptions: cors.CorsOptions = {
     if (!origin) return callback(null, true);
     if (allowedOrigins.length === 0) return callback(null, true);
     if (allowedOrigins.includes(origin)) return callback(null, true);
-    console.error(`[CORS] Blocked origin: "${origin}". Allowed: [${allowedOrigins.join(", ")}]. Fix: set CORS_ORIGIN on Railway to exactly match your Vercel URL (no trailing slash).`);
+    console.error(`[CORS] Blocked origin: "${origin}". Allowed: [${allowedOrigins.join(", ")}]`);
     return callback(new Error(`CORS: origin "${origin}" is not allowed`));
   },
   credentials: true,
@@ -59,10 +60,10 @@ const corsOptions: cors.CorsOptions = {
 };
 
 app.use(cors(corsOptions));
-
-// Respond to all OPTIONS preflight requests immediately so cross-origin
-// POST/PUT/DELETE from Vercel → Railway never get a 405 from downstream handlers.
 app.options("/{*path}", cors(corsOptions));
+
+// ─── Security middleware (helmet, hpp) ────────────────────────────────────────
+applySecurityMiddleware(app);
 
 // ─── Health check routes ───────────────────────────────────────────────────────
 app.get("/health", (_req: Request, res: Response) => {
@@ -85,7 +86,7 @@ export function log(message: string, source = "express") {
 app.use((req, res, next) => {
   const start = Date.now();
   const path = req.path;
-  let capturedJsonResponse: Record<string, any> | undefined = undefined;
+  let capturedJsonResponse: Record<string, unknown> | undefined = undefined;
 
   const originalResJson = res.json;
   res.json = function (bodyJson, ...args) {
@@ -107,28 +108,23 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use(
+// ─── Body parsing — 10kb limit for regular routes, 100kb for admin ────────────
+app.use((req, res, next) => {
+  const limit = req.path.startsWith("/api/admin") ? "100kb" : "10kb";
   express.json({
+    limit,
     verify: (req, _res, buf) => {
-      req.rawBody = buf;
+      (req as Request & { rawBody: unknown }).rawBody = buf;
     },
-  }),
-);
+  })(req, res, next);
+});
 
-app.use(express.urlencoded({ extended: false }));
+app.use(express.urlencoded({ extended: false, limit: "10kb" }));
 
 // ─── Session ──────────────────────────────────────────────────────────────────
-// isCrossOrigin = true when CORS_ORIGIN is set, meaning the frontend is on a
-// different domain (e.g. Vercel). In that case cookies must be SameSite=None;Secure.
 const isCrossOrigin = !!process.env.CORS_ORIGIN;
-
-let sessionMiddleware: express.RequestHandler;
-
 const isProduction = process.env.NODE_ENV === "production";
 
-// Cookies must be Secure when SameSite=None (cross-origin). In production on Railway
-// the server runs behind a TLS-terminating reverse proxy, so we trust the X-Forwarded-Proto
-// header (already handled by app.set("trust proxy", 1) above) to mark cookies as secure.
 const cookieOptions = {
   maxAge: 30 * 24 * 60 * 60 * 1000,
   httpOnly: true,
@@ -139,6 +135,8 @@ const cookieOptions = {
 if (isCrossOrigin) {
   console.log("[SESSION] Cross-origin mode: SameSite=None; Secure cookies enabled");
 }
+
+let sessionMiddleware: express.RequestHandler;
 
 try {
   const PgSession = connectPgSimple(session);
@@ -171,19 +169,47 @@ try {
 app.use(sessionMiddleware);
 
 // ─── Routes + Vite/Static, then listen ────────────────────────────────────────
-// Uses static imports (not dynamic await import()) so the esbuild CJS bundle
-// correctly resolves all modules before any routes are registered.
 (async () => {
   // ── Startup migrations (idempotent) ────────────────────────────────────────
-  // Run before routes so the schema is always in sync even if db:push is skipped
-  // or aborted (e.g. Railway asking about session table data loss).
   try {
     const migPool = new Pool({ connectionString: process.env.DATABASE_URL });
     await migPool.query(
       "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin boolean NOT NULL DEFAULT false"
     );
+    // API key security upgrade: add new columns if missing
+    await migPool.query(`
+      ALTER TABLE api_keys
+        ADD COLUMN IF NOT EXISTS key_hash varchar(64),
+        ADD COLUMN IF NOT EXISTS key_prefix varchar(12),
+        ADD COLUMN IF NOT EXISTS scope varchar(32) NOT NULL DEFAULT 'full_access',
+        ADD COLUMN IF NOT EXISTS expires_at timestamp,
+        ADD COLUMN IF NOT EXISTS last_used_at timestamp
+    `);
+    // Migrate any legacy plain-text keys only if the 'key' column still exists
+    const keyColExists = await migPool.query(`
+      SELECT 1 FROM information_schema.columns
+      WHERE table_name = 'api_keys' AND column_name = 'key'
+    `);
+    if (keyColExists.rowCount && keyColExists.rowCount > 0) {
+      const legacyKeys = await migPool.query(
+        "SELECT id, key FROM api_keys WHERE key IS NOT NULL AND key_hash IS NULL"
+      );
+      if (legacyKeys.rowCount && legacyKeys.rowCount > 0) {
+        const { createHash } = await import("crypto");
+        for (const row of legacyKeys.rows as Array<{ id: number; key: string }>) {
+          const hash = createHash("sha256").update(row.key).digest("hex");
+          const prefix = row.key.slice(0, 10);
+          await migPool.query(
+            "UPDATE api_keys SET key_hash = $1, key_prefix = $2 WHERE id = $3",
+            [hash, prefix, row.id]
+          );
+        }
+        console.log(`[MIGRATE] Hashed ${legacyKeys.rowCount} legacy API key(s)`);
+      }
+      await migPool.query("ALTER TABLE api_keys DROP COLUMN key");
+    }
     await migPool.end();
-    console.log("[MIGRATE] Schema up to date: is_admin column ensured");
+    console.log("[MIGRATE] Schema up to date");
   } catch (err) {
     console.error("[MIGRATE] Startup migration failed:", (err as Error).message);
   }
@@ -211,7 +237,6 @@ app.use(sessionMiddleware);
     log("Routes registered");
   } catch (err) {
     console.error("[INIT] Failed to register routes:", err);
-    // Register a fallback error route so the server doesn't silently swallow requests
     app.use("/api", (_req: Request, res: Response) => {
       res.status(500).json({ error: "Server failed to initialize routes. Check server logs." });
     });
@@ -222,14 +247,10 @@ app.use(sessionMiddleware);
       console.error("[WATCHDOG] Failed to start:", err),
     );
 
-    // In a split deployment (Vercel frontend + Railway backend), CORS_ORIGIN is set
-    // because the frontend lives on a different domain. Railway is API-only — skip
-    // the SPA catch-all (serveStatic) which would return index.html for every
-    // unmatched path and silently swallow API requests.
     if (isCrossOrigin) {
       log("split-deployment mode: static file serving disabled (frontend is on Vercel)");
       app.use((req: Request, res: Response) => {
-        console.warn(`[404] Unmatched route: ${req.method} ${req.path} — if this is an API route, the route may not be registered. Check Railway logs for startup errors.`);
+        console.warn(`[404] Unmatched route: ${req.method} ${req.path}`);
         res.status(404).json({ error: "Not found" });
       });
     } else {
@@ -245,16 +266,9 @@ app.use(sessionMiddleware);
     await setupVite(httpServer, app);
   }
 
-  // Error handler — must be registered after all routes
-  app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
-    const status = err.status || err.statusCode || 500;
-    const message = err.message || "Internal Server Error";
-    console.error("[ERROR]", err);
-    if (res.headersSent) return next(err);
-    return res.status(status).json({ error: message });
-  });
+  // ── Centralized error handler (must be last) ───────────────────────────────
+  app.use(errorHandler);
 
-  // Start listening only after ALL routes and middleware are wired up
   if (!process.env.VERCEL) {
     const port = parseInt(process.env.PORT || "5000", 10);
     const env = process.env.NODE_ENV || "development";
@@ -267,7 +281,6 @@ app.use(sessionMiddleware);
   }
 })();
 
-// Default export used by Vercel's @vercel/node serverless handler (legacy mode)
-export default async (req: any, res: any) => {
+export default async (req: Request, res: Response) => {
   app(req, res);
 };

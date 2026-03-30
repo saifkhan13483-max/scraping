@@ -50,7 +50,7 @@ function makeInMemoryRedis(): Redis {
           });
           return pipe;
         },
-        set: (key: string, val: string) => {
+        set: (key: string, val: string, ..._args: any[]) => {
           ops.push(async () => store.set(key, val));
           return pipe;
         },
@@ -107,7 +107,7 @@ function makeInMemoryRedis(): Redis {
       lists.set(key, (lists.get(key) ?? []).filter((v) => v !== val));
     },
     get: async (key: string) => store.get(key) ?? null,
-    set: async (key: string, val: string) => { store.set(key, val); },
+    set: async (key: string, val: string, ..._args: any[]) => { store.set(key, val); },
     del: async (key: string) => {
       store.delete(key);
       lists.delete(key);
@@ -133,6 +133,15 @@ function makeInMemoryRedis(): Redis {
       const minN = min === "-inf" ? -Infinity : Number(min);
       const maxN = max === "+inf" ? Infinity : Number(max);
       return set.filter((e) => e.score >= minN && e.score <= maxN).map((e) => e.member);
+    },
+    zrevrangebyscore: async (key: string, max: number | string, min: number | string) => {
+      const set = sortedSets.get(key) ?? [];
+      const minN = min === "-inf" ? -Infinity : Number(min);
+      const maxN = max === "+inf" ? Infinity : Number(max);
+      return set
+        .filter((e) => e.score >= minN && e.score <= maxN)
+        .sort((a, b) => b.score - a.score)
+        .map((e) => e.member);
     },
     zrem: async (key: string, member: string) => {
       sortedSets.set(key, (sortedSets.get(key) ?? []).filter((e) => e.member !== member));
@@ -189,6 +198,8 @@ export const KEYS = {
   // Legacy alias kept for the watchdog
   queuePending: "queue:normal",
   jobTimestamp: (id: string) => `job:${id}:started_at`,
+  // Per-user job index: sorted set scored by creation timestamp
+  userJobs: (userId: number) => `user:${userId}:jobs`,
 } as const;
 
 export function priorityQueue(priority: "high" | "normal" | "low"): string {

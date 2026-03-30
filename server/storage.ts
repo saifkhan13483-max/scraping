@@ -1,5 +1,5 @@
-import { type Job, type InsertJob, type User, type InsertUser, type Subscription, type ApiKey, type PlanType, PLAN_CONFIG, users, subscriptions, apiKeys } from "@shared/schema";
-import { randomUUID, randomBytes } from "crypto";
+import { type Job, type InsertJob, type User, type InsertUser, type Subscription, type ApiKey, type ApiKeyWithSecret, type PlanType, PLAN_CONFIG, users, subscriptions, apiKeys } from "@shared/schema";
+import { randomUUID, randomBytes, createHash } from "crypto";
 import { redis, KEYS, priorityQueue } from "./redis";
 import { db } from "./db";
 import { eq, and, sql } from "drizzle-orm";
@@ -14,7 +14,7 @@ export interface IStorage {
   getNextPendingJob(): Promise<Job | undefined>;
   getJobById(id: string): Promise<Job | undefined>;
   getAllJobs(userId?: number): Promise<Job[]>;
-  completeJob(id: string, data: any, workerId?: string): Promise<Job | undefined>;
+  completeJob(id: string, data: unknown, workerId?: string): Promise<Job | undefined>;
   failJob(id: string, error: string, workerId?: string): Promise<Job | undefined>;
   retryJob(id: string): Promise<Job | undefined>;
   deleteJob(id: string): Promise<boolean>;
@@ -34,8 +34,9 @@ export interface IStorage {
 
   // API Key operations (PostgreSQL)
   getApiKeys(userId: number): Promise<ApiKey[]>;
-  createApiKey(userId: number, name: string): Promise<ApiKey>;
+  createApiKey(userId: number, name: string, scope?: string, expiresAt?: Date): Promise<ApiKeyWithSecret>;
   deleteApiKey(userId: number, id: number): Promise<boolean>;
+  validateApiKey(rawKey: string): Promise<ApiKey | undefined>;
 
   // Admin operations
   getAllUsers(): Promise<(User & { subscription?: Subscription })[]>;
@@ -87,6 +88,11 @@ function deserializeJob(hash: Record<string, string>): Job {
   };
 }
 
+/** SHA-256 hash of a raw API key string */
+function hashApiKey(rawKey: string): string {
+  return createHash("sha256").update(rawKey).digest("hex");
+}
+
 // ─────────────────────────────────────────────
 // Storage Implementation
 // ─────────────────────────────────────────────
@@ -99,7 +105,7 @@ export class AppStorage implements IStorage {
     const id = randomUUID();
     const now = new Date();
     const priority = (insert.priority ?? "normal") as Job["priority"];
-    const delay = (insert as any).delay as number | undefined;
+    const delay = (insert as Record<string, unknown>).delay as number | undefined;
     const runAt = delay ? new Date(now.getTime() + delay) : null;
 
     const job: Job = {
@@ -128,6 +134,11 @@ export class AppStorage implements IStorage {
       // Immediate: push to priority queue
       pipeline.lpush(priorityQueue(priority), id);
       console.log(`[JOB CREATED] id=${id} url=${insert.url} priority=${priority}`);
+    }
+
+    // Maintain per-user secondary index (sorted set scored by creation timestamp)
+    if (userId !== undefined) {
+      (pipeline as any).zadd(KEYS.userJobs(userId), now.getTime(), id);
     }
 
     await pipeline.exec();
@@ -174,7 +185,38 @@ export class AppStorage implements IStorage {
     return deserializeJob(hash as Record<string, string>);
   }
 
+  /**
+   * Get jobs for a user using the per-user sorted-set index (O(log N) instead of full SCAN).
+   * For admin (no userId), fall back to SCAN since admins need all jobs.
+   */
   async getAllJobs(userId?: number): Promise<Job[]> {
+    if (userId !== undefined) {
+      // Use secondary index: ZREVRANGEBYSCORE for newest-first order
+      const jobIds = await (redis as any).zrevrangebyscore(
+        KEYS.userJobs(userId),
+        "+inf",
+        "-inf"
+      ) as string[];
+
+      if (jobIds.length === 0) return [];
+
+      const pipeline = redis.pipeline();
+      for (const jid of jobIds) {
+        pipeline.hgetall(KEYS.job(jid));
+      }
+      const results = await pipeline.exec();
+
+      const jobs: Job[] = [];
+      for (const result of results ?? []) {
+        const [err, hash] = result as [Error | null, Record<string, string>];
+        if (!err && hash && hash.id) {
+          jobs.push(deserializeJob(hash));
+        }
+      }
+      return jobs;
+    }
+
+    // Admin path: full SCAN (acceptable since admin use is rare)
     const keys: string[] = [];
     let cursor = "0";
     do {
@@ -195,26 +237,21 @@ export class AppStorage implements IStorage {
     for (const result of results ?? []) {
       const [err, hash] = result as [Error | null, Record<string, string>];
       if (!err && hash && hash.id) {
-        const job = deserializeJob(hash);
-        if (userId !== undefined) {
-          if (job.userId === userId) jobs.push(job);
-        } else {
-          jobs.push(job);
-        }
+        jobs.push(deserializeJob(hash));
       }
     }
 
     return jobs.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
   }
 
-  async completeJob(id: string, data: any, workerId?: string): Promise<Job | undefined> {
+  async completeJob(id: string, data: unknown, workerId?: string): Promise<Job | undefined> {
     const hash = await redis.hgetall(KEYS.job(id));
     if (!hash || !hash.id) return undefined;
 
     const updated: Job = {
       ...deserializeJob(hash as Record<string, string>),
       status: "completed",
-      result: data,
+      result: data as Job["result"],
       workerId: workerId ?? hash.workerId ?? null,
       updatedAt: new Date(),
     };
@@ -276,8 +313,10 @@ export class AppStorage implements IStorage {
   }
 
   async deleteJob(id: string): Promise<boolean> {
-    const exists = await redis.exists(KEYS.job(id));
-    if (!exists) return false;
+    const hash = await redis.hgetall(KEYS.job(id));
+    if (!hash || !hash.id) return false;
+
+    const userId = hash.userId ? parseInt(hash.userId, 10) : undefined;
 
     const pipeline = redis.pipeline();
     pipeline.del(KEYS.job(id));
@@ -287,6 +326,12 @@ export class AppStorage implements IStorage {
     pipeline.lrem(KEYS.queueLow, 1, id);
     pipeline.lrem(KEYS.queueProcessing, 1, id);
     (pipeline as any).zrem(KEYS.queueDelayed, id);
+
+    // Remove from per-user index
+    if (userId !== undefined) {
+      (pipeline as any).zrem(KEYS.userJobs(userId), id);
+    }
+
     await pipeline.exec();
 
     console.log(`[JOB DELETED] id=${id}`);
@@ -357,16 +402,16 @@ export class AppStorage implements IStorage {
 
   async getUserByEmail(email: string): Promise<User | undefined> {
     const result = await db.execute(sql`SELECT id, email, password_hash as "passwordHash", name, is_admin as "isAdmin", created_at as "createdAt" FROM users WHERE email = ${email.toLowerCase().trim()}`);
-    const rows = result.rows as any[];
+    const rows = result.rows as User[];
     if (!rows.length) return undefined;
-    return rows[0] as User;
+    return rows[0];
   }
 
   async getUserById(id: number): Promise<User | undefined> {
     const result = await db.execute(sql`SELECT id, email, password_hash as "passwordHash", name, is_admin as "isAdmin", created_at as "createdAt" FROM users WHERE id = ${id}`);
-    const rows = result.rows as any[];
+    const rows = result.rows as User[];
     if (!rows.length) return undefined;
-    return rows[0] as User;
+    return rows[0];
   }
 
   async validatePassword(user: User, password: string): Promise<boolean> {
@@ -424,10 +469,22 @@ export class AppStorage implements IStorage {
     return db.select().from(apiKeys).where(eq(apiKeys.userId, userId));
   }
 
-  async createApiKey(userId: number, name: string): Promise<ApiKey> {
-    const key = "sk_" + randomBytes(24).toString("hex");
-    const [apiKey] = await db.insert(apiKeys).values({ userId, key, name }).returning();
-    return apiKey;
+  async createApiKey(userId: number, name: string, scope = "full_access", expiresAt?: Date): Promise<ApiKeyWithSecret> {
+    const rawSecret = "sk_" + randomBytes(24).toString("hex");
+    const keyHash = hashApiKey(rawSecret);
+    const keyPrefix = rawSecret.slice(0, 10);
+
+    const [apiKey] = await db.insert(apiKeys).values({
+      userId,
+      keyHash,
+      keyPrefix,
+      name,
+      scope: scope as ApiKey["scope"],
+      expiresAt: expiresAt ?? null,
+    }).returning();
+
+    console.log(`[API KEY CREATED] id=${apiKey.id} userId=${userId} scope=${scope}`);
+    return { ...apiKey, secret: rawSecret };
   }
 
   async deleteApiKey(userId: number, id: number): Promise<boolean> {
@@ -435,11 +492,32 @@ export class AppStorage implements IStorage {
     return result.length > 0;
   }
 
+  async validateApiKey(rawKey: string): Promise<ApiKey | undefined> {
+    const keyHash = hashApiKey(rawKey);
+    const [keyRow] = await db.select().from(apiKeys).where(eq(apiKeys.keyHash, keyHash));
+    if (!keyRow) return undefined;
+
+    // Check expiry
+    if (keyRow.expiresAt && new Date() > keyRow.expiresAt) {
+      console.warn(`[API KEY] Expired key used: id=${keyRow.id}`);
+      return undefined;
+    }
+
+    // Update last_used_at asynchronously (don't await)
+    db.update(apiKeys)
+      .set({ lastUsedAt: new Date() })
+      .where(eq(apiKeys.id, keyRow.id))
+      .execute()
+      .catch((err: Error) => console.error("[API KEY] Failed to update last_used_at:", err.message));
+
+    return keyRow;
+  }
+
   // ── Admin Operations ──────────────────────────
 
   async getAllUsers(): Promise<(User & { subscription?: Subscription })[]> {
     const result = await db.execute(sql`SELECT id, email, password_hash as "passwordHash", name, is_admin as "isAdmin", created_at as "createdAt" FROM users ORDER BY created_at`);
-    const allUsers = result.rows as any[];
+    const allUsers = result.rows as User[];
     const allSubs = await db.select().from(subscriptions);
     const subMap = new Map(allSubs.map((s) => [s.userId, s]));
     return allUsers.map((u) => ({ ...u, subscription: subMap.get(u.id) }));

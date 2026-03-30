@@ -2,42 +2,72 @@ import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { scrapeUrl } from "./scraper";
-import { insertJobSchema, submitResultSchema, failJobSchema, retryJobSchema, insertUserSchema, createApiKeySchema } from "@shared/schema";
+import { insertJobSchema, submitResultSchema, failJobSchema, retryJobSchema, insertUserSchema, createApiKeySchema, PLAN_CONFIG } from "@shared/schema";
 import { ZodError, z } from "zod";
-import { requireAuth, requireAdmin, resolveUser } from "./auth";
+import { requireAuth, requireAdmin, requireScope, resolveUser } from "./auth";
+import { sanitizeBody } from "./security";
 import rateLimit from "express-rate-limit";
 import { randomBytes } from "crypto";
 
 // One-time secret generated at startup to protect the internal process endpoint.
-// Only requests that include this token (sent by this server itself) are allowed.
 const INTERNAL_PROCESS_SECRET = randomBytes(32).toString("hex");
 
 // ─── Rate limiters ─────────────────────────────────────────────────────────────
 
 const globalLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
+  windowMs: 15 * 60 * 1000,
   max: 300,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: "Too many requests, please try again later." },
-  skip: (req) => req.path === "/api/health",
+  skip: (req) => req.path === "/api/health" || req.path === "/health",
 });
 
-const authLimiter = rateLimit({
+// Stricter auth limits: 5 attempts per 15 minutes for login, 3/hour for register
+const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 20,
+  max: 5,
   standardHeaders: true,
   legacyHeaders: false,
-  message: { error: "Too many auth attempts. Please wait before trying again." },
+  message: { error: "Too many login attempts. Please wait before trying again." },
 });
 
-const jobLimiter = rateLimit({
-  windowMs: 60 * 1000, // 1 minute
-  max: 30,
+const registerLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 3,
   standardHeaders: true,
   legacyHeaders: false,
-  message: { error: "Too many job submissions. Please slow down." },
+  message: { error: "Too many registration attempts. Please try again later." },
 });
+
+/**
+ * Dynamic job rate limiter based on the user's plan.
+ * Free: 10/min, Pro: 60/min, Business: 200/min
+ */
+async function planBasedJobLimiter(req: Request, res: Response, next: NextFunction) {
+  const userId = req.session?.userId ?? req.resolvedUserId;
+  let max = PLAN_CONFIG.free.jobsPerMinute; // default to free tier
+
+  if (userId) {
+    try {
+      const quota = await storage.checkQuota(userId);
+      max = PLAN_CONFIG[quota.plan]?.jobsPerMinute ?? max;
+    } catch {
+      // fall through with free-tier limit
+    }
+  }
+
+  rateLimit({
+    windowMs: 60 * 1000,
+    max,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (r) => `job:${userId ?? r.ip}`,
+    message: {
+      error: `Rate limit exceeded. Your plan allows ${max} job submissions per minute.`,
+    },
+  })(req, res, next);
+}
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -51,13 +81,12 @@ function isValidUrl(url: string): boolean {
 }
 
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
-  // Apply global rate limiter to all routes
   app.use(globalLimiter);
   app.use(resolveUser);
 
   // ── Auth Routes ─────────────────────────────────────────────────────────────
 
-  app.post("/api/auth/register", authLimiter, async (req: Request, res: Response) => {
+  app.post("/api/auth/register", registerLimiter, sanitizeBody, async (req: Request, res: Response) => {
     try {
       const parsed = insertUserSchema.parse(req.body);
       const existing = await storage.getUserByEmail(parsed.email);
@@ -76,7 +105,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  app.post("/api/auth/login", authLimiter, async (req: Request, res: Response) => {
+  app.post("/api/auth/login", loginLimiter, sanitizeBody, async (req: Request, res: Response) => {
     try {
       const { email, password } = z.object({ email: z.string().email(), password: z.string() }).parse(req.body);
       const user = await storage.getUserByEmail(email);
@@ -130,18 +159,36 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   app.get("/api/keys", requireAuth, async (req: Request, res: Response) => {
     const keys = await storage.getApiKeys(req.resolvedUserId!);
-    return res.json(keys.map((k) => ({ ...k, key: k.key.slice(0, 10) + "…" })));
+    return res.json(keys.map((k) => ({
+      id: k.id,
+      name: k.name,
+      keyPrefix: k.keyPrefix,
+      scope: k.scope,
+      expiresAt: k.expiresAt,
+      lastUsedAt: k.lastUsedAt,
+      createdAt: k.createdAt,
+    })));
   });
 
   app.post("/api/keys", requireAuth, async (req: Request, res: Response) => {
     try {
-      const { name } = createApiKeySchema.parse(req.body);
+      const { name, scope, expiresAt } = createApiKeySchema.parse(req.body);
       const sub = await storage.getSubscription(req.resolvedUserId!);
       if (!sub || sub.plan === "free") {
         return res.status(403).json({ error: "API key access requires a Pro or Business plan. Please upgrade to create API keys." });
       }
-      const key = await storage.createApiKey(req.resolvedUserId!, name);
-      return res.status(201).json(key);
+      const expiryDate = expiresAt ? new Date(expiresAt) : undefined;
+      const key = await storage.createApiKey(req.resolvedUserId!, name, scope, expiryDate);
+      // Return the full secret ONCE — it won't be retrievable again
+      return res.status(201).json({
+        id: key.id,
+        name: key.name,
+        secret: key.secret,
+        keyPrefix: key.keyPrefix,
+        scope: key.scope,
+        expiresAt: key.expiresAt,
+        createdAt: key.createdAt,
+      });
     } catch (err) {
       if (err instanceof ZodError) {
         return res.status(400).json({ error: err.errors[0].message });
@@ -160,7 +207,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // ── Job Routes ──────────────────────────────────────────────────────────────
 
-  app.post("/api/job", requireAuth, jobLimiter, async (req: Request, res: Response) => {
+  app.post("/api/job", requireAuth, requireScope("create_jobs"), planBasedJobLimiter, sanitizeBody, async (req: Request, res: Response) => {
     try {
       const parsed = insertJobSchema.parse(req.body);
       if (!isValidUrl(parsed.url)) {
@@ -177,14 +224,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const job = await storage.createJob(parsed, userId);
       await storage.incrementJobUsage(userId);
 
-      // Fire-and-forget: trigger server-side processing so jobs run without an external worker.
       const host = req.get("host") || "localhost:5000";
       const protocol = req.secure || req.headers["x-forwarded-proto"] === "https" ? "https" : "http";
       fetch(`${protocol}://${host}/api/jobs/process`, {
         method: "POST",
         headers: { "x-internal-secret": INTERNAL_PROCESS_SECRET },
       }).catch((e) =>
-        console.warn("[AUTO-PROCESS] Could not trigger processing:", e.message)
+        console.warn("[AUTO-PROCESS] Could not trigger processing:", (e as Error).message)
       );
 
       return res.status(201).json(job);
@@ -196,15 +242,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  // Worker endpoint — requires session or API key auth (external workers must supply x-api-key)
-  app.get("/api/job", requireAuth, async (_req: Request, res: Response) => {
+  app.get("/api/job", requireAuth, requireScope("create_jobs"), async (_req: Request, res: Response) => {
     const job = await storage.getNextPendingJob();
     if (!job) return res.status(204).send();
     return res.json(job);
   });
 
-  // Server-side job processor — picks up one pending job and scrapes it in-process.
-  // Protected by a startup-generated secret so only this server can trigger processing.
   app.post("/api/jobs/process", async (req: Request, res: Response) => {
     const secret = req.headers["x-internal-secret"];
     if (secret !== INTERNAL_PROCESS_SECRET) {
@@ -244,7 +287,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const parsed = submitResultSchema.parse(req.body);
       const job = await storage.completeJob(parsed.id, parsed.data, parsed.workerId);
       if (!job) return res.status(404).json({ error: "Job not found" });
-      // Verify the job belongs to the authenticated worker's user
       if (job.userId !== null && job.userId !== req.resolvedUserId) {
         return res.status(403).json({ error: "Forbidden" });
       }
@@ -262,7 +304,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const parsed = failJobSchema.parse(req.body);
       const job = await storage.failJob(parsed.id, parsed.error, parsed.workerId);
       if (!job) return res.status(404).json({ error: "Job not found" });
-      // Verify the job belongs to the authenticated worker's user
       if (job.userId !== null && job.userId !== req.resolvedUserId) {
         return res.status(403).json({ error: "Forbidden" });
       }
@@ -284,14 +325,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const job = await storage.retryJob(parsed.id);
       if (!job) return res.status(404).json({ error: "Job not found or not in failed state" });
 
-      // Fire-and-forget: trigger server-side processing for the retried job
       const host = req.get("host") || "localhost:5000";
       const protocol = req.secure || req.headers["x-forwarded-proto"] === "https" ? "https" : "http";
       fetch(`${protocol}://${host}/api/jobs/process`, {
         method: "POST",
         headers: { "x-internal-secret": INTERNAL_PROCESS_SECRET },
       }).catch((e) =>
-        console.warn("[AUTO-PROCESS] Could not trigger retry processing:", e.message)
+        console.warn("[AUTO-PROCESS] Could not trigger retry processing:", (e as Error).message)
       );
 
       return res.json(job);
@@ -313,13 +353,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     return res.json({ success: true });
   });
 
-  // ── Admin Bootstrap (one-time setup) ────────────────────────────────────────
-  // Promotes the currently-logged-in user to admin if NO admin exists yet.
+  // ── Admin Bootstrap ──────────────────────────────────────────────────────────
 
   app.post("/api/admin/bootstrap", requireAuth, async (req: Request, res: Response) => {
     const { db } = await import("./db");
     const { users } = await import("@shared/schema");
-    const { eq } = await import("drizzle-orm");
     const allUsers = await db.select().from(users);
     const adminExists = allUsers.some((u) => u.isAdmin);
     if (adminExists) {

@@ -7,23 +7,44 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
-import { Key, Plus, Trash2, Copy, Loader2, AlertCircle, Eye, EyeOff, Zap } from "lucide-react";
+import { Key, Plus, Trash2, Copy, Loader2, AlertCircle, Eye, EyeOff, Zap, Shield } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import type { ApiKey, Subscription } from "@shared/schema";
 import { PLAN_CONFIG } from "@shared/schema";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from "@/components/ui/select";
+import { Badge } from "@/components/ui/badge";
 import { Link } from "wouter";
 
-function NewKeyDialog({ open, onClose, onCreated }: { open: boolean; onClose: () => void; onCreated: (key: ApiKey & { key: string }) => void }) {
+type ApiKeyWithSecret = ApiKey & { secret: string };
+type ApiKeyDisplay = Omit<ApiKey, "keyHash"> & { keyPrefix: string };
+
+const SCOPE_LABELS: Record<string, { label: string; color: string }> = {
+  read: { label: "Read only", color: "bg-blue-500/10 text-blue-600 dark:text-blue-400" },
+  create_jobs: { label: "Create jobs", color: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" },
+  full_access: { label: "Full access", color: "bg-violet-500/10 text-violet-600 dark:text-violet-400" },
+};
+
+function NewKeyDialog({ open, onClose, onCreated }: {
+  open: boolean;
+  onClose: () => void;
+  onCreated: (key: ApiKeyWithSecret) => void;
+}) {
   const [name, setName] = useState("");
+  const [scope, setScope] = useState("full_access");
   const { toast } = useToast();
 
   const createMutation = useMutation({
-    mutationFn: () => apiRequest("POST", "/api/keys", { name }),
+    mutationFn: () => apiRequest("POST", "/api/keys", { name, scope }),
     onSuccess: async (res) => {
       const key = await res.json();
       onCreated(key);
       setName("");
+      setScope("full_access");
       queryClient.invalidateQueries({ queryKey: ["/api/keys"] });
     },
     onError: (err: unknown) => {
@@ -54,6 +75,19 @@ function NewKeyDialog({ open, onClose, onCreated }: { open: boolean; onClose: ()
               data-testid="input-key-name"
             />
           </div>
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium">Permissions</label>
+            <Select value={scope} onValueChange={setScope} >
+              <SelectTrigger data-testid="select-key-scope">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="read">Read only — view jobs & results</SelectItem>
+                <SelectItem value="create_jobs">Create jobs — submit & manage jobs</SelectItem>
+                <SelectItem value="full_access">Full access — all permissions</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
           <div className="flex gap-2">
             <Button variant="outline" className="flex-1" onClick={onClose}>Cancel</Button>
             <Button
@@ -71,7 +105,11 @@ function NewKeyDialog({ open, onClose, onCreated }: { open: boolean; onClose: ()
   );
 }
 
-function RevealKeyDialog({ apiKey, open, onClose }: { apiKey: (ApiKey & { key: string }) | null; open: boolean; onClose: () => void }) {
+function RevealKeyDialog({ apiKey, open, onClose }: {
+  apiKey: ApiKeyWithSecret | null;
+  open: boolean;
+  onClose: () => void;
+}) {
   const { toast } = useToast();
   const [visible, setVisible] = useState(false);
   if (!apiKey) return null;
@@ -91,7 +129,7 @@ function RevealKeyDialog({ apiKey, open, onClose }: { apiKey: (ApiKey & { key: s
           </p>
           <div className="flex gap-2">
             <div className="flex-1 bg-muted rounded-md px-3 py-2 font-mono text-xs break-all">
-              {visible ? apiKey.key : "sk_" + "•".repeat(40)}
+              {visible ? apiKey.secret : apiKey.secret.slice(0, 10) + "•".repeat(40)}
             </div>
             <Button size="icon" variant="ghost" onClick={() => setVisible(!visible)} data-testid="button-toggle-key">
               {visible ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
@@ -100,7 +138,7 @@ function RevealKeyDialog({ apiKey, open, onClose }: { apiKey: (ApiKey & { key: s
               size="icon"
               variant="ghost"
               onClick={() => {
-                navigator.clipboard.writeText(apiKey.key);
+                navigator.clipboard.writeText(apiKey.secret);
                 toast({ title: "API key copied to clipboard" });
               }}
               data-testid="button-copy-key"
@@ -119,10 +157,10 @@ export default function ApiKeysPage() {
   const { user } = useAuth();
   const { toast } = useToast();
   const [createOpen, setCreateOpen] = useState(false);
-  const [revealKey, setRevealKey] = useState<(ApiKey & { key: string }) | null>(null);
+  const [revealKey, setRevealKey] = useState<ApiKeyWithSecret | null>(null);
   const [deletingIds, setDeletingIds] = useState<Set<number>>(new Set());
 
-  const { data: keys = [], isLoading } = useQuery<ApiKey[]>({
+  const { data: keys = [], isLoading } = useQuery<ApiKeyDisplay[]>({
     queryKey: ["/api/keys"],
     enabled: !!user,
   });
@@ -143,11 +181,11 @@ export default function ApiKeysPage() {
     onSuccess: (_res, id) => {
       setDeletingIds((prev) => { const next = new Set(prev); next.delete(id); return next; });
       queryClient.invalidateQueries({ queryKey: ["/api/keys"] });
-      toast({ title: "API key deleted" });
+      toast({ title: "API key revoked" });
     },
     onError: (_err, id) => {
       setDeletingIds((prev) => { const next = new Set(prev); next.delete(id); return next; });
-      toast({ title: "Failed to delete API key", variant: "destructive" });
+      toast({ title: "Failed to revoke API key", variant: "destructive" });
     },
   });
 
@@ -207,30 +245,56 @@ export default function ApiKeysPage() {
               </div>
             ) : (
               <div className="divide-y divide-border">
-                {keys.map((k) => (
-                  <div key={k.id} className="flex items-center gap-3 px-5 py-3.5" data-testid={`row-key-${k.id}`}>
-                    <div className="p-2 rounded-lg bg-primary/10">
-                      <Key className="w-3.5 h-3.5 text-primary" />
+                {keys.map((k) => {
+                  const scopeInfo = SCOPE_LABELS[k.scope ?? "full_access"] ?? SCOPE_LABELS.full_access;
+                  const isExpired = k.expiresAt && new Date() > new Date(k.expiresAt);
+                  return (
+                    <div key={k.id} className="flex items-center gap-3 px-5 py-3.5" data-testid={`row-key-${k.id}`}>
+                      <div className="p-2 rounded-lg bg-primary/10">
+                        <Key className="w-3.5 h-3.5 text-primary" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <p className="text-sm font-medium" data-testid={`text-key-name-${k.id}`}>{k.name}</p>
+                          <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${scopeInfo.color}`}>
+                            {scopeInfo.label}
+                          </span>
+                          {isExpired && (
+                            <Badge variant="destructive" className="text-[10px] px-1.5 py-0.5">Expired</Badge>
+                          )}
+                        </div>
+                        <p className="text-xs text-muted-foreground font-mono mt-0.5" data-testid={`text-key-preview-${k.id}`}>
+                          {k.keyPrefix}••••••••••••••••••••••••••••••••
+                        </p>
+                        <div className="flex gap-3 mt-0.5">
+                          <p className="text-[10px] text-muted-foreground">
+                            Created {formatDistanceToNow(new Date(k.createdAt), { addSuffix: true })}
+                          </p>
+                          {k.lastUsedAt && (
+                            <p className="text-[10px] text-muted-foreground">
+                              Last used {formatDistanceToNow(new Date(k.lastUsedAt), { addSuffix: true })}
+                            </p>
+                          )}
+                          {k.expiresAt && (
+                            <p className="text-[10px] text-muted-foreground">
+                              {isExpired ? "Expired" : "Expires"} {formatDistanceToNow(new Date(k.expiresAt), { addSuffix: true })}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="h-7 w-7 text-destructive"
+                        disabled={deletingIds.has(k.id)}
+                        onClick={() => deleteMutation.mutate(k.id)}
+                        data-testid={`button-delete-key-${k.id}`}
+                      >
+                        {deletingIds.has(k.id) ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                      </Button>
                     </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium" data-testid={`text-key-name-${k.id}`}>{k.name}</p>
-                      <p className="text-xs text-muted-foreground font-mono mt-0.5" data-testid={`text-key-preview-${k.id}`}>{k.key}</p>
-                    </div>
-                    <span className="text-xs text-muted-foreground hidden sm:block">
-                      {formatDistanceToNow(new Date(k.createdAt), { addSuffix: true })}
-                    </span>
-                    <Button
-                      size="icon"
-                      variant="ghost"
-                      className="h-7 w-7 text-destructive"
-                      disabled={deletingIds.has(k.id)}
-                      onClick={() => deleteMutation.mutate(k.id)}
-                      data-testid={`button-delete-key-${k.id}`}
-                    >
-                      {deletingIds.has(k.id) ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
-                    </Button>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </CardContent>
@@ -238,12 +302,29 @@ export default function ApiKeysPage() {
 
         <Card className="border-card-border">
           <CardHeader className="pb-3 pt-4 px-5">
-            <CardTitle className="text-sm font-semibold">Usage</CardTitle>
+            <CardTitle className="text-sm font-semibold flex items-center gap-2">
+              <Shield className="w-4 h-4 text-primary" />
+              Usage & Permissions
+            </CardTitle>
           </CardHeader>
-          <CardContent className="px-5 pb-4">
-            <p className="text-sm text-muted-foreground mb-3">Authenticate API requests by passing your key in the request header:</p>
+          <CardContent className="px-5 pb-4 space-y-4">
+            <p className="text-sm text-muted-foreground">Pass your key in the request header:</p>
             <div className="bg-muted rounded-md p-3 font-mono text-xs text-foreground">
               x-api-key: sk_your_key_here
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
+              {Object.entries(SCOPE_LABELS).map(([scope, info]) => (
+                <div key={scope} className="rounded-lg border border-border p-3">
+                  <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${info.color}`}>
+                    {info.label}
+                  </span>
+                  <p className="text-xs text-muted-foreground mt-2">
+                    {scope === "read" && "View jobs, results, and subscription info"}
+                    {scope === "create_jobs" && "Submit URLs and manage your jobs"}
+                    {scope === "full_access" && "All permissions including API key management"}
+                  </p>
+                </div>
+              ))}
             </div>
           </CardContent>
         </Card>
