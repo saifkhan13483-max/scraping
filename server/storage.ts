@@ -325,14 +325,13 @@ export class AppStorage implements IStorage {
     resetAt.setMonth(resetAt.getMonth() + 1);
 
     const ownerEmail = (process.env.OWNER_EMAIL ?? "saifkhan16382@gmail.com").toLowerCase().trim();
-    const isAdmin = data.email.toLowerCase().trim() === ownerEmail;
+    const grantAdmin = data.email.toLowerCase().trim() === ownerEmail;
 
     const user = await db.transaction(async (tx) => {
       const [newUser] = await tx.insert(users).values({
         email: data.email.toLowerCase().trim(),
         name: data.name.trim(),
         passwordHash,
-        isAdmin,
       }).returning();
 
       await tx.insert(subscriptions).values({
@@ -345,6 +344,13 @@ export class AppStorage implements IStorage {
       return newUser;
     });
 
+    // Grant admin via raw SQL to avoid any ORM schema caching issues
+    if (grantAdmin) {
+      await db.execute(sql`UPDATE users SET is_admin = true WHERE id = ${user.id}`);
+      console.log(`[ADMIN GRANTED] id=${user.id} email=${user.email} is now admin`);
+      return { ...user, isAdmin: true };
+    }
+
     console.log(`[USER CREATED] id=${user.id} email=${user.email}`);
     return user;
   }
@@ -355,8 +361,10 @@ export class AppStorage implements IStorage {
   }
 
   async getUserById(id: number): Promise<User | undefined> {
-    const [user] = await db.select().from(users).where(eq(users.id, id));
-    return user;
+    const result = await db.execute(sql`SELECT id, email, password_hash as "passwordHash", name, is_admin as "isAdmin", created_at as "createdAt" FROM users WHERE id = ${id}`);
+    const rows = result.rows as any[];
+    if (!rows.length) return undefined;
+    return rows[0] as User;
   }
 
   async validatePassword(user: User, password: string): Promise<boolean> {
@@ -428,7 +436,8 @@ export class AppStorage implements IStorage {
   // ── Admin Operations ──────────────────────────
 
   async getAllUsers(): Promise<(User & { subscription?: Subscription })[]> {
-    const allUsers = await db.select().from(users).orderBy(users.createdAt);
+    const result = await db.execute(sql`SELECT id, email, password_hash as "passwordHash", name, is_admin as "isAdmin", created_at as "createdAt" FROM users ORDER BY created_at`);
+    const allUsers = result.rows as any[];
     const allSubs = await db.select().from(subscriptions);
     const subMap = new Map(allSubs.map((s) => [s.userId, s]));
     return allUsers.map((u) => ({ ...u, subscription: subMap.get(u.id) }));
@@ -442,8 +451,8 @@ export class AppStorage implements IStorage {
   }
 
   async setUserAdmin(userId: number, isAdmin: boolean): Promise<User | undefined> {
-    const [updated] = await db.update(users).set({ isAdmin }).where(eq(users.id, userId)).returning();
-    return updated;
+    await db.execute(sql`UPDATE users SET is_admin = ${isAdmin} WHERE id = ${userId}`);
+    return this.getUserById(userId);
   }
 
   async getAdminStats(): Promise<{
