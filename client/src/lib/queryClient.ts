@@ -3,9 +3,24 @@ import { QueryClient, QueryFunction, QueryCache } from "@tanstack/react-query";
 // When the frontend (Vercel) and backend (Railway) are on different domains,
 // set VITE_API_URL in Vercel to your Railway backend URL (e.g. https://scrapercloud.up.railway.app).
 // In local dev and monorepo deployments, leave it unset — relative paths are used.
-// Strip trailing slash AND any accidental /api suffix to prevent doubled paths like /api/api/auth/login
+//
+// IMPORTANT: only the origin (protocol + hostname + port) is used.
+// Any path suffix like /api, /api/health, etc. is automatically stripped.
+// This prevents common Vercel misconfiguration where the full health-check URL
+// (e.g. https://backend.up.railway.app/api/health) is pasted as VITE_API_URL,
+// which would turn /api/auth/login into /api/health/api/auth/login → 404.
 const rawApiUrl = (import.meta.env.VITE_API_URL as string | undefined) ?? "";
-const API_BASE = rawApiUrl.replace(/\/+$/, "").replace(/\/api$/, "");
+let API_BASE = "";
+if (rawApiUrl) {
+  try {
+    API_BASE = new URL(rawApiUrl).origin;
+  } catch {
+    API_BASE = rawApiUrl.replace(/\/+$/, "").replace(/\/api.*$/, "");
+  }
+  if (API_BASE !== rawApiUrl.replace(/\/+$/, "")) {
+    console.warn(`[API] VITE_API_URL path suffix stripped. Using origin: "${API_BASE}" (was "${rawApiUrl}"). Set VITE_API_URL to just the root domain, e.g. https://backend.up.railway.app`);
+  }
+}
 
 async function throwIfResNotOk(res: Response) {
   // Check for HTML response first (before checking res.ok) because the Railway
