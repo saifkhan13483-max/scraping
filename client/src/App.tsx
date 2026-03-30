@@ -45,7 +45,9 @@ function Router() {
       <Route path="/api-keys">
         {() => <ProtectedRoute component={ApiKeysPage} />}
       </Route>
-      <Route path="/admin" component={AdminPage} />
+      <Route path="/admin">
+        {() => <ProtectedRoute component={AdminPage} />}
+      </Route>
       <Route component={NotFound} />
     </Switch>
   );

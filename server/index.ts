@@ -188,6 +188,24 @@ app.use(sessionMiddleware);
     console.error("[MIGRATE] Startup migration failed:", (err as Error).message);
   }
 
+  // ── Ensure owner email always has admin rights ──────────────────────────────
+  try {
+    const ownerEmail = (process.env.OWNER_EMAIL ?? "saifkhan16382@gmail.com").toLowerCase().trim();
+    const ownerPool = new Pool({ connectionString: process.env.DATABASE_URL });
+    const result = await ownerPool.query(
+      "UPDATE users SET is_admin = true WHERE email = $1 AND is_admin = false RETURNING id, email",
+      [ownerEmail]
+    );
+    if (result.rowCount && result.rowCount > 0) {
+      console.log(`[MIGRATE] Admin granted to owner: ${result.rows[0].email} (id=${result.rows[0].id})`);
+    } else {
+      console.log(`[MIGRATE] Owner admin check: ${ownerEmail} already admin or not yet registered`);
+    }
+    await ownerPool.end();
+  } catch (err) {
+    console.error("[MIGRATE] Owner admin grant failed:", (err as Error).message);
+  }
+
   try {
     await registerRoutes(httpServer, app);
     log("Routes registered");
