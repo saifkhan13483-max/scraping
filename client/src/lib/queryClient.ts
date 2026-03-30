@@ -3,9 +3,9 @@ import { QueryClient, QueryFunction, QueryCache } from "@tanstack/react-query";
 // When the frontend (Vercel) and backend (Railway) are on different domains,
 // set VITE_API_URL in Vercel to your Railway backend URL (e.g. https://scrapercloud.up.railway.app).
 // In local dev and monorepo deployments, leave it unset — relative paths are used.
-// Strip trailing slash to prevent double-slash URLs like https://api.example.com//api/login
+// Strip trailing slash AND any accidental /api suffix to prevent doubled paths like /api/api/auth/login
 const rawApiUrl = (import.meta.env.VITE_API_URL as string | undefined) ?? "";
-const API_BASE = rawApiUrl.replace(/\/+$/, "");
+const API_BASE = rawApiUrl.replace(/\/+$/, "").replace(/\/api$/, "");
 
 async function throwIfResNotOk(res: Response) {
   // Check for HTML response first (before checking res.ok) because the Railway
@@ -50,6 +50,18 @@ async function throwIfResNotOk(res: Response) {
         );
         throw new Error(
           `API server returned 405. Verify VITE_API_URL ("${apiUrl}") has no trailing slash and matches your Railway backend URL. Also confirm CORS_ORIGIN on Railway is set to your Vercel domain (e.g. https://your-app.vercel.app).`
+        );
+      }
+    }
+
+    // 404 in cross-origin split deployment usually means VITE_API_URL is wrong
+    // (e.g. set to https://backend.up.railway.app/api instead of https://backend.up.railway.app)
+    if (res.status === 404) {
+      const apiUrl = import.meta.env.VITE_API_URL;
+      if (apiUrl) {
+        console.error(
+          "[API] 404 on", res.url,
+          `— VITE_API_URL is "${apiUrl}". Common causes: (1) URL includes /api suffix — it must be the root URL only, e.g. https://backend.up.railway.app, (2) route does not exist on the deployed backend.`
         );
       }
     }

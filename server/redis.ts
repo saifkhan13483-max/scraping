@@ -153,8 +153,8 @@ if (rawUrl && /^rediss?(\+tls)?:\/\//i.test(rawUrl)) {
   try {
     redis = new Redis(rawUrl, {
       maxRetriesPerRequest: 3,
-      enableReadyCheck: true,
-      lazyConnect: false,
+      enableReadyCheck: false,
+      lazyConnect: true,
       tls: rawUrl.startsWith("rediss://") ? {} : undefined,
     });
     redis.on("connect", () => console.log("[Redis] Connected"));

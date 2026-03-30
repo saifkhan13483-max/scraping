@@ -39,11 +39,18 @@ const allowedOrigins: string[] = rawOrigins
   ? rawOrigins.split(",").map((o) => o.trim().replace(/\/+$/, ""))
   : [];
 
+if (allowedOrigins.length > 0) {
+  console.log(`[CORS] Allowed origins: ${allowedOrigins.join(", ")}`);
+} else {
+  console.warn("[CORS] CORS_ORIGIN is not set — all origins allowed (development mode)");
+}
+
 const corsOptions: cors.CorsOptions = {
   origin: (origin, callback) => {
     if (!origin) return callback(null, true);
     if (allowedOrigins.length === 0) return callback(null, true);
     if (allowedOrigins.includes(origin)) return callback(null, true);
+    console.error(`[CORS] Blocked origin: "${origin}". Allowed: [${allowedOrigins.join(", ")}]. Fix: set CORS_ORIGIN on Railway to exactly match your Vercel URL (no trailing slash).`);
     return callback(new Error(`CORS: origin "${origin}" is not allowed`));
   },
   credentials: true,
@@ -117,6 +124,22 @@ const isCrossOrigin = !!process.env.CORS_ORIGIN;
 
 let sessionMiddleware: express.RequestHandler;
 
+const isProduction = process.env.NODE_ENV === "production";
+
+// Cookies must be Secure when SameSite=None (cross-origin). In production on Railway
+// the server runs behind a TLS-terminating reverse proxy, so we trust the X-Forwarded-Proto
+// header (already handled by app.set("trust proxy", 1) above) to mark cookies as secure.
+const cookieOptions = {
+  maxAge: 30 * 24 * 60 * 60 * 1000,
+  httpOnly: true,
+  secure: isProduction,
+  sameSite: (isCrossOrigin ? "none" : "lax") as "none" | "lax",
+};
+
+if (isCrossOrigin) {
+  console.log("[SESSION] Cross-origin mode: SameSite=None; Secure cookies enabled");
+}
+
 try {
   const PgSession = connectPgSimple(session);
   const sessionPool = new Pool({ connectionString: process.env.DATABASE_URL });
@@ -130,25 +153,18 @@ try {
     secret: process.env.SESSION_SECRET || "scraper-saas-secret-key-change-in-production",
     resave: false,
     saveUninitialized: false,
-    cookie: {
-      maxAge: 30 * 24 * 60 * 60 * 1000,
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: isCrossOrigin ? "none" : "lax",
-    },
+    proxy: true,
+    cookie: cookieOptions,
   });
+  console.log("[SESSION] PostgreSQL session store initialised");
 } catch (err) {
-  console.error("[SESSION] Failed to create session store, using memory store:", err);
+  console.error("[SESSION] Failed to create PostgreSQL session store, using memory store:", err);
   sessionMiddleware = session({
     secret: process.env.SESSION_SECRET || "scraper-saas-secret-key-change-in-production",
     resave: false,
     saveUninitialized: false,
-    cookie: {
-      maxAge: 30 * 24 * 60 * 60 * 1000,
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: isCrossOrigin ? "none" : "lax",
-    },
+    proxy: true,
+    cookie: cookieOptions,
   });
 }
 
@@ -180,7 +196,8 @@ app.use(sessionMiddleware);
     // unmatched path and silently swallow API requests.
     if (isCrossOrigin) {
       log("split-deployment mode: static file serving disabled (frontend is on Vercel)");
-      app.use((_req: Request, res: Response) => {
+      app.use((req: Request, res: Response) => {
+        console.warn(`[404] Unmatched route: ${req.method} ${req.path} — if this is an API route, the route may not be registered. Check Railway logs for startup errors.`);
         res.status(404).json({ error: "Not found" });
       });
     } else {
