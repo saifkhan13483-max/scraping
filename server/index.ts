@@ -174,6 +174,20 @@ app.use(sessionMiddleware);
 // Uses static imports (not dynamic await import()) so the esbuild CJS bundle
 // correctly resolves all modules before any routes are registered.
 (async () => {
+  // ── Startup migrations (idempotent) ────────────────────────────────────────
+  // Run before routes so the schema is always in sync even if db:push is skipped
+  // or aborted (e.g. Railway asking about session table data loss).
+  try {
+    const migPool = new Pool({ connectionString: process.env.DATABASE_URL });
+    await migPool.query(
+      "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin boolean NOT NULL DEFAULT false"
+    );
+    await migPool.end();
+    console.log("[MIGRATE] Schema up to date: is_admin column ensured");
+  } catch (err) {
+    console.error("[MIGRATE] Startup migration failed:", (err as Error).message);
+  }
+
   try {
     await registerRoutes(httpServer, app);
     log("Routes registered");

@@ -356,8 +356,10 @@ export class AppStorage implements IStorage {
   }
 
   async getUserByEmail(email: string): Promise<User | undefined> {
-    const [user] = await db.select().from(users).where(eq(users.email, email.toLowerCase().trim()));
-    return user;
+    const result = await db.execute(sql`SELECT id, email, password_hash as "passwordHash", name, is_admin as "isAdmin", created_at as "createdAt" FROM users WHERE email = ${email.toLowerCase().trim()}`);
+    const rows = result.rows as any[];
+    if (!rows.length) return undefined;
+    return rows[0] as User;
   }
 
   async getUserById(id: number): Promise<User | undefined> {

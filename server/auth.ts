@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import { db } from "./db";
-import { apiKeys, users } from "@shared/schema";
-import { eq } from "drizzle-orm";
+import { apiKeys } from "@shared/schema";
+import { eq, sql } from "drizzle-orm";
 
 declare global {
   namespace Express {
@@ -24,8 +24,11 @@ export async function requireAdmin(req: Request, res: Response, next: NextFuncti
   if (!userId) {
     return res.status(401).json({ error: "Unauthorized" });
   }
-  const [user] = await db.select().from(users).where(eq(users.id, userId));
-  if (!user?.isAdmin) {
+  const result = await db.execute(
+    sql`SELECT is_admin as "isAdmin" FROM users WHERE id = ${userId}`
+  );
+  const row = (result.rows as any[])[0];
+  if (!row?.isAdmin) {
     return res.status(403).json({ error: "Forbidden: admin access required" });
   }
   next();
