@@ -1,0 +1,499 @@
+You are upgrading an existing SaaS web scraping platform called "ScraperCloud." The codebase is a monorepo with a React frontend (Vite) and Express.js backend (TypeScript, ESM). It uses PostgreSQL (Drizzle ORM), Redis (ioredis), and session-based auth. The frontend deploys to Vercel, the backend to Railway.
+
+Below is the COMPLETE upgrade plan. Implement each section methodically, testing after each phase. Do NOT break existing functionality — all changes must be backward-compatible or include proper migrations.
+
+====================================================================
+PHASE 1: CRITICAL INFRASTRUCTURE FIXES & SECURITY HARDENING
+====================================================================
+
+1.1 — REMOVE UNUSED DEPENDENCIES
+- Remove `passport` and `passport-local` from package.json (they're installed but never used). Clean up any leftover imports.
+
+1.2 — REPLACE REDIS SCAN WITH SECONDARY INDEXES
+- Current problem: `getAllJobs()` uses SCAN to iterate all `job:*` keys. This is O(N) and degrades at scale.
+- Solution: Create a Redis sorted set per user: `user:{userId}:jobs` where the score is the job creation timestamp.
+  - On job creation, ZADD the job ID to `user:{userId}:jobs`.
+  - On job deletion, ZREM the job ID from `user:{userId}:jobs`.
+  - Replace `getAllJobs(userId)` to use ZRANGEBYSCORE or ZREVRANGEBYSCORE on the user's sorted set, then pipeline HGETALL for each job ID.
+  - Add a migration/backfill script that reads all existing `job:*` keys and populates the per-user sorted sets.
+  - Update the in-memory Redis fallback in `server/redis.ts` to support ZADD, ZREM, ZRANGEBYSCORE, ZREVRANGEBYSCORE.
+
+1.3 — FIX SESSION TABLE DROP RISK
+- Current problem: `drizzle-kit push --force` at startup can drop the session table.
+- Solution:
+  - Replace the startup `push --force` with a proper migration system using `drizzle-kit generate` + `drizzle-kit migrate`.
+  - Store migrations in a `/drizzle/migrations` folder committed to the repo.
+  - At server startup, run `migrate()` from `drizzle-orm/postgres-js/migrator` (or equivalent) instead of push.
+  - Ensure `connect-pg-simple`'s `session` table is created via an explicit SQL migration file, not auto-created.
+
+1.4 — RATE LIMITING ENHANCEMENT
+- Current: basic `express-rate-limit`.
+- Upgrade:
+  - Install `rate-limit-redis` and configure it to use Redis as the store (so rate limits are shared across potential future multi-process deployments).
+  - Implement tiered rate limits based on subscription plan:
+    - Free: 10 requests/minute to /api/job
+    - Pro: 60 requests/minute
+    - Business: 200 requests/minute
+  - Add rate limit headers to responses (X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset).
+  - Add a dedicated rate limit for auth endpoints (5 attempts/15 minutes for login, 3 attempts/hour for registration).
+
+1.5 — INPUT SANITIZATION & SECURITY
+- Add `helmet` middleware to Express with a strict CSP policy.
+- Add `hpp` (HTTP Parameter Pollution) protection.
+- Sanitize all user inputs beyond Zod validation — strip any HTML/script tags from string fields using a lightweight sanitizer like `sanitize-html` or DOMPurify (server-side via jsdom).
+- Add CSRF protection: implement a double-submit cookie pattern or use `csurf` alternative (since csurf is deprecated, use `csrf-csrf` package).
+- Ensure all error responses never leak stack traces or internal details in production (create a centralized error handler middleware).
+- Add request body size limit: `express.json({ limit: '10kb' })` for all routes except admin routes (100kb).
+
+1.6 — API KEY SECURITY UPGRADE
+- Hash API keys in the database using SHA-256 (store only the hash, show the full key once at creation time).
+- Add API key scoping: allow users to create keys with specific permissions (read-only, create-jobs, full-access).
+- Add API key expiration dates (optional, user-configurable).
+- Add last_used_at timestamp tracking for each API key.
+
+====================================================================
+PHASE 2: PAYMENT INTEGRATION (STRIPE)
+====================================================================
+
+2.1 — STRIPE SETUP
+- Install `stripe` npm package.
+- Create a new file `server/stripe.ts` for all Stripe logic.
+- Required new environment variables: STRIPE_SECRET_KEY, STRIPE_PUBLISHABLE_KEY, STRIPE_WEBHOOK_SECRET, STRIPE_PRO_PRICE_ID, STRIPE_BUSINESS_PRICE_ID.
+
+2.2 — STRIPE CHECKOUT FLOW
+- Create endpoint POST /api/subscription/checkout that:
+  - Validates the user is authenticated.
+  - Creates a Stripe Checkout session for the selected plan (Pro or Business).
+  - Uses `mode: 'subscription'` with the appropriate price ID.
+  - Sets success_url and cancel_url to frontend routes.
+  - Returns the checkout session URL.
+- Create endpoint POST /api/stripe/webhook that:
+  - Validates the Stripe signature using STRIPE_WEBHOOK_SECRET.
+  - Handles events: `checkout.session.completed`, `invoice.paid`, `invoice.payment_failed`, `customer.subscription.updated`, `customer.subscription.deleted`.
+  - On successful checkout: update user's plan in PostgreSQL, set `stripe_customer_id` and `stripe_subscription_id` on the user record.
+  - On subscription cancellation: downgrade user to Free plan, reset quota accordingly.
+  - On payment failure: mark subscription as `past_due`, send notification (log for now).
+
+2.3 — CUSTOMER PORTAL
+- Create endpoint POST /api/subscription/portal that creates a Stripe Customer Portal session so users can manage billing, update payment methods, and cancel subscriptions themselves.
+
+2.4 — DATABASE SCHEMA UPDATES
+- Add columns to users table:
+  - `stripe_customer_id` (text, nullable, unique)
+  - `stripe_subscription_id` (text, nullable)
+  - `subscription_status` (text, default 'active') — values: active, past_due, canceled, trialing
+- Add these via a Drizzle migration file.
+
+2.5 — FRONTEND UPGRADE FLOW
+- On the pricing page, replace the current instant-upgrade buttons with:
+  - Free plan: default, no action needed.
+  - Pro/Business: "Subscribe" button that calls POST /api/subscription/checkout and redirects to Stripe Checkout.
+  - If already subscribed: "Manage Subscription" button that calls POST /api/subscription/portal and redirects to Stripe Portal.
+- Add a /subscription/success and /subscription/cancel page.
+- Display current plan status, next billing date, and subscription status in the user dashboard.
+
+====================================================================
+PHASE 3: JAVASCRIPT RENDERING (PLAYWRIGHT WORKER INTEGRATION)
+====================================================================
+
+3.1 — WORKER SERVICE ARCHITECTURE
+- The /worker directory already contains a Playwright-based worker. Upgrade it to be a standalone microservice:
+  - Create a Dockerfile for the worker using `mcr.microsoft.com/playwright:v1.45.0-jammy` as base.
+  - Worker exposes a single endpoint: POST /scrape with body { url, options }.
+  - Options include: waitForSelector, timeout (max 60s), screenshot (boolean), fullPage (boolean), executeScript (string — custom JS to run on page).
+  - Worker responds with the same structured JSON format as the HTTP scraper, plus optional screenshot (base64).
+  - Add resource blocking (block ads, trackers, fonts, large images) for faster page loads.
+  - Add stealth plugins (`playwright-extra` + `puppeteer-extra-plugin-stealth` equivalent).
+
+3.2 — BACKEND INTEGRATION
+- Add a new field to job creation: `renderJs: boolean` (default: false).
+- In the job processor, if `renderJs` is true:
+  - POST to the worker service URL (new env var: WORKER_URL) instead of using the HTTP scraper.
+  - Apply a longer timeout (60s instead of 25s).
+  - Worker jobs count as 2x against the user's monthly quota (configurable in PLAN_CONFIG).
+- Add a fallback: if the worker service is unavailable, return an error with a clear message rather than falling back to HTTP scraping silently.
+
+3.3 — PLAN-BASED JS RENDERING LIMITS
+- Update PLAN_CONFIG in shared/schema.ts:
+  - Free: 0 JS rendering jobs/month (feature disabled)
+  - Pro: 50 JS rendering jobs/month
+  - Business: unlimited JS rendering jobs/month
+- Track JS rendering usage separately in the subscription record (`js_renders_used` column).
+
+====================================================================
+PHASE 4: FRONTEND UI/UX OVERHAUL
+====================================================================
+
+4.1 — DESIGN SYSTEM UPGRADE
+- Implement a consistent dark/light theme toggle using Tailwind CSS dark mode (class strategy).
+- Store theme preference in localStorage and respect system preference as default.
+- Create a cohesive color palette:
+  - Primary: Blue-600 (#2563EB) / Dark: Blue-400
+  - Accent: Emerald-500 for success states
+  - Warning: Amber-500
+  - Destructive: Red-500
+  - Neutral: Slate scale for backgrounds and text
+- Add smooth transitions between theme changes (transition-colors duration-200).
+- Upgrade all shadcn/ui components to their latest versions.
+
+4.2 — LANDING PAGE REDESIGN
+- Create a modern, conversion-optimized landing page at "/" with these sections:
+  1. Hero: Bold headline ("Extract Web Data at Scale"), subtitle, CTA button ("Start Scraping Free"), and an animated code/JSON preview showing a live scraping result.
+  2. Features grid (6 cards): Fast HTTP Scraping, JS Rendering, Priority Queues, API Access, Structured JSON Output, Real-time Monitoring.
+  3. How It Works (3 steps): Submit URL → We Scrape → Get JSON. Use numbered steps with icons and connecting lines/arrows.
+  4. Pricing section: 3-column pricing cards (Free, Pro, Business) with feature comparison. Highlight Pro as "Most Popular". Add monthly/annual toggle (annual = 2 months free).
+  5. Testimonials/Social proof section (placeholder with 3 fake testimonials for now).
+  6. FAQ accordion (at least 8 questions about the service).
+  7. Footer: Links to docs, API reference, status page, GitHub, contact. Copyright notice.
+- Add subtle animations using Framer Motion: fade-in on scroll, hover effects on cards, animated counters for stats.
+
+4.3 — DASHBOARD OVERHAUL
+- Redesign the main dashboard with a modern layout:
+  - Left sidebar (collapsible on mobile) with navigation: Dashboard, New Scrape, Jobs History, API Keys, Subscription, Settings. Admin section (if admin).
+  - Top bar with: user avatar/initial, plan badge, usage indicator (progress bar showing jobs used / limit), notification bell, theme toggle.
+  - Main content area with:
+    - Quick stats cards at top: Total Jobs, Successful, Failed, Average Response Time (show sparkline mini-charts using recharts or similar lightweight library).
+    - Recent jobs table with: URL (truncated), status badge (queued/processing/completed/failed), created time (relative using date-fns), response time, actions (view, re-run, delete).
+    - Quick scrape form: URL input + "Scrape Now" button directly on the dashboard.
+  - Add real-time job status updates using Server-Sent Events (SSE):
+    - Create endpoint GET /api/jobs/stream that sends SSE events when job status changes.
+    - Frontend subscribes to this stream on the dashboard and jobs page.
+    - Update job status badges in real-time without polling.
+
+4.4 — JOB DETAIL PAGE
+- When a user clicks on a completed job, show a rich detail page:
+  - Tabs: Overview, Raw JSON, Headers, Screenshots (if JS rendered).
+  - Overview tab: Extracted title, description, keywords as styled cards. Links and images in collapsible sections. Load time and HTTP status prominently displayed.
+  - Raw JSON tab: Syntax-highlighted JSON viewer with copy button (use `react-json-view-lite` or similar).
+  - Add a "Re-scrape" button that creates a new job with the same URL.
+  - Add an "Export" button with options: JSON, CSV, XML.
+
+4.5 — API KEYS MANAGEMENT PAGE
+- List all API keys with: name, truncated key (show last 4 chars), permissions, created date, last used, expiry.
+- "Create New Key" button opens a modal: name, permissions checkboxes, expiry date picker.
+- Show the full key ONCE in a modal with a copy button after creation.
+- Revoke button with confirmation dialog.
+
+4.6 — RESPONSIVE DESIGN
+- Ensure ALL pages are fully responsive:
+  - Mobile (< 640px): Sidebar becomes a bottom nav or hamburger menu. Tables become cards. Reduce padding/margins.
+  - Tablet (640-1024px): Sidebar collapses to icons only. Tables remain but with fewer columns.
+  - Desktop (> 1024px): Full layout with expanded sidebar.
+- Test all breakpoints and ensure no horizontal scrolling anywhere.
+
+4.7 — LOADING & ERROR STATES
+- Add skeleton loaders for every data-fetching component (use shadcn/ui Skeleton component).
+- Add a global error boundary with a friendly "Something went wrong" page and a "Try Again" button.
+- Add toast notifications (using shadcn/ui Toast) for: job created, job completed, job failed, plan upgraded, API key created, etc.
+- Add an empty state illustration and message for: no jobs yet, no API keys yet.
+
+====================================================================
+PHASE 5: API DOCUMENTATION & DEVELOPER EXPERIENCE
+====================================================================
+
+5.1 — API DOCUMENTATION PAGE
+- Create a /docs page in the frontend with interactive API documentation:
+  - Styled similarly to Stripe's API docs.
+  - Left sidebar: Table of contents (Authentication, Jobs, Subscription, Admin).
+  - Right panel: Code examples in multiple languages (curl, JavaScript/fetch, Python/requests, Node.js/axios).
+  - Each endpoint documented with: method, URL, description, request body schema (with types), response schema, example response, error codes.
+  - Include a "Try It" button that pre-fills the user's API key (if logged in) and lets them make real requests from the docs page.
+
+5.2 — ENDPOINTS TO DOCUMENT
+- Authentication:
+  - POST /api/auth/register — { email, password, name }
+  - POST /api/auth/login — { email, password }
+  - POST /api/auth/logout
+  - GET /api/auth/me
+- Jobs:
+  - POST /api/job — { url, priority?, renderJs?, scheduledFor? }
+  - GET /api/jobs — List all user's jobs (add pagination: ?page=1&limit=20&status=completed)
+  - GET /api/job/:id — Get single job detail
+  - DELETE /api/job/:id — Delete a job
+  - POST /api/job/:id/retry — Retry a failed job
+- Subscription:
+  - GET /api/subscription — Get current plan and usage
+  - POST /api/subscription/checkout — Start Stripe checkout
+  - POST /api/subscription/portal — Open billing portal
+- API Keys:
+  - GET /api/keys — List all API keys
+  - POST /api/keys — Create new key
+  - DELETE /api/keys/:id — Revoke a key
+- Webhooks (new feature):
+  - POST /api/webhooks — Register a webhook URL
+  - GET /api/webhooks — List webhooks
+  - DELETE /api/webhooks/:id — Delete a webhook
+
+5.3 — WEBHOOK SYSTEM (NEW FEATURE)
+- Allow users to register webhook URLs that receive POST callbacks when their jobs complete or fail.
+- Database: new `webhooks` table: id, user_id, url, events (json array: ['job.completed', 'job.failed']), secret (for signature verification), active (boolean), created_at.
+- When a job completes/fails, check if the user has active webhooks for that event. If so, POST the job result to the webhook URL with:
+  - Header `X-ScraperCloud-Signature`: HMAC-SHA256 of the body using the webhook secret.
+  - Retry up to 3 times with exponential backoff (1s, 5s, 30s) on failure.
+- Store webhook delivery attempts in Redis (last 100 per webhook) for debugging.
+
+====================================================================
+PHASE 6: PERFORMANCE & MONITORING
+====================================================================
+
+6.1 — BACKEND PERFORMANCE
+- Add response compression: install and configure `compression` middleware.
+- Add ETags for cacheable responses (Express built-in, enable it).
+- Add Redis connection pooling (ioredis already supports this, but ensure maxRetriesPerRequest and connection config are optimized).
+- Add database connection pooling: configure Drizzle's PostgreSQL driver with min: 2, max: 10 connections.
+- Add request logging using `pino` (structured JSON logs) instead of console.log. Include request ID, duration, status code, and user ID in every log entry.
+
+6.2 — FRONTEND PERFORMANCE
+- Add lazy loading for all route components using React.lazy() + Suspense with skeleton fallbacks.
+- Add image lazy loading (loading="lazy" on all img tags).
+- Configure Vite for optimal production builds:
+  - Enable code splitting.
+  - Configure manualChunks to separate: vendor (react, radix), utils (date-fns, zod), and app code.
+  - Enable CSS minification and purging.
+  - Add bundle analysis using `rollup-plugin-visualizer`.
+- Add PWA support using `vite-plugin-pwa`:
+  - Service worker for offline caching of static assets.
+  - Web app manifest with ScraperCloud branding.
+  - Add install prompt on supported browsers.
+
+6.3 — HEALTH CHECK & STATUS
+- Create endpoint GET /api/health that returns:
+  - Status: ok/degraded/down
+  - PostgreSQL connection: ok/error
+  - Redis connection: ok/error
+  - Worker service: ok/error/not_configured
+  - Uptime: seconds since server start
+  - Version: from package.json
+- Create a public /status page in the frontend that polls /api/health every 30 seconds and shows system status with colored indicators.
+
+6.4 — ERROR TRACKING
+- Add Sentry integration (or prepare for it):
+  - Install `@sentry/node` for backend, `@sentry/react` for frontend.
+  - Add SENTRY_DSN env var (optional — if not set, Sentry is disabled).
+  - Capture all unhandled exceptions and unhandled promise rejections.
+  - Add Sentry user context (user ID, email, plan) to error reports.
+  - Add custom breadcrumbs for job creation, processing, and completion.
+
+====================================================================
+PHASE 7: ADMIN PANEL UPGRADE
+====================================================================
+
+7.1 — ADMIN DASHBOARD
+- Redesign the admin panel with:
+  - Overview cards: Total Users, Active Subscriptions (by plan), Jobs Today, Jobs This Month, Failed Jobs (last 24h), Revenue (from Stripe).
+  - Charts (using recharts):
+    - Line chart: Jobs per day (last 30 days).
+    - Bar chart: New users per week (last 12 weeks).
+    - Pie chart: User distribution by plan.
+    - Area chart: Revenue over time (last 6 months).
+  - Recent activity feed: latest signups, job failures, plan changes.
+
+7.2 — USER MANAGEMENT UPGRADE
+- Searchable, sortable, paginated user table with columns: name, email, plan, jobs used, registered date, last active, status, actions.
+- User detail page (click on a user): full profile, subscription history, job history, API keys, login history.
+- Bulk actions: select multiple users → change plan, send notification, export to CSV.
+- Add ability to impersonate a user (admin can view the dashboard as that user for debugging — add a banner "Viewing as [user]" with an "Exit" button).
+
+7.3 — JOB MONITORING
+- Real-time job queue visualization: show items in high/normal/low queues, currently processing, delayed jobs.
+- Job failure analysis: group failures by error type, show most-failing URLs.
+- Add ability to manually re-queue or cancel any job.
+- Add a "purge" button to clear all completed/failed jobs older than N days.
+
+7.4 — SYSTEM CONFIGURATION (NEW)
+- Allow admins to configure certain settings via the admin panel (stored in a `system_config` table):
+  - Max concurrent scraping jobs
+  - Default job timeout
+  - Rate limit values per plan
+  - Feature flags (e.g., enable/disable JS rendering, enable/disable registration)
+  - Maintenance mode toggle (shows a maintenance page to all non-admin users)
+
+====================================================================
+PHASE 8: ADDITIONAL FEATURES
+====================================================================
+
+8.1 — BATCH SCRAPING
+- Allow users to submit multiple URLs in a single request:
+  - POST /api/jobs/batch — { urls: string[], priority?, renderJs? }
+  - Maximum URLs per batch: Free=5, Pro=50, Business=200.
+  - Returns an array of job IDs.
+  - Add a batch detail page that shows progress (X of Y completed) with a progress bar.
+  - Each URL in the batch counts as one job against the quota.
+
+8.2 — SCHEDULED/RECURRING SCRAPES
+- Allow users to schedule recurring scrapes:
+  - POST /api/schedules — { url, cron (simplified: daily/weekly/monthly), renderJs?, active }
+  - Store in PostgreSQL: `schedules` table: id, user_id, url, cron_expression, render_js, active, last_run_at, next_run_at, created_at.
+  - The watchdog (or a dedicated scheduler interval) checks for due schedules every 60 seconds and creates jobs automatically.
+  - Plan limits: Free=0 schedules, Pro=5, Business=50.
+  - Dashboard widget showing active schedules with next run time.
+
+8.3 — SCRAPE RESULT DIFFING
+- When a URL is scraped multiple times, offer a "Compare" feature:
+  - Show a side-by-side diff of the JSON results highlighting what changed.
+  - Use a lightweight diff library (e.g., `deep-diff` or `json-diff`).
+  - Useful for monitoring: "has this page changed since last scrape?"
+
+8.4 — EXPORT & INTEGRATION
+- Add export formats: JSON (existing), CSV, XML, Excel (using `xlsx` package).
+- Add a POST /api/export/bulk endpoint that exports multiple job results as a ZIP file.
+- Add integration with popular tools (optional, as webhook templates):
+  - Google Sheets: provide instructions for using webhook → Google Apps Script.
+  - Zapier/Make: provide webhook URL format compatible with these services.
+  - Airtable: provide webhook template.
+
+8.5 — USER SETTINGS PAGE
+- Create a /settings page with tabs:
+  - Profile: Update name, email (with re-verification), avatar upload (store in local filesystem or S3).
+  - Security: Change password, view active sessions (with "revoke" option), enable 2FA (TOTP using `otplib` — store secret in DB, verify on login).
+  - Notifications: Email preferences (job completed, job failed, weekly report, quota warning at 80% and 100%).
+  - Data: Export all my data (GDPR compliance — generates a ZIP with all user data, jobs, and settings). Delete account (with confirmation and cool-down period).
+
+8.6 — EMAIL NOTIFICATIONS
+- Install `nodemailer` (or use a service like Resend/SendGrid via API).
+- Send transactional emails for:
+  - Welcome email on registration
+  - Password reset (implement forgot password flow: POST /api/auth/forgot-password, POST /api/auth/reset-password with token)
+  - Job completion/failure (if enabled in settings)
+  - Quota warning (80% and 100%)
+  - Subscription changes
+- Use a simple HTML email template with ScraperCloud branding.
+- Store email templates in /server/emails/ directory.
+
+====================================================================
+PHASE 9: SEO & MARKETING OPTIMIZATION
+====================================================================
+
+9.1 — SEO FUNDAMENTALS
+- Since the frontend is a React SPA, implement SSR or pre-rendering for SEO-critical pages:
+  - Use `vite-plugin-ssr` or migrate the landing page, pricing page, docs page, and blog to a pre-rendered setup.
+  - Alternatively, create a separate lightweight landing page using Astro or Next.js that links to the SPA for the dashboard (this is a simpler approach if SSR is too complex).
+- Add proper meta tags to every page using a <Head> component (react-helmet-async):
+  - title, description, og:title, og:description, og:image, og:url, twitter:card, twitter:title, twitter:description, twitter:image.
+- Add a sitemap.xml (auto-generated for public pages: /, /pricing, /docs, /blog/*).
+- Add a robots.txt allowing search engines to crawl public pages but blocking /dashboard, /admin, /api.
+- Add structured data (JSON-LD) for:
+  - Organization schema on the homepage.
+  - SoftwareApplication schema.
+  - FAQ schema on the landing page FAQ section.
+  - Pricing schema (using Offer) on the pricing page.
+
+9.2 — BLOG / CONTENT SYSTEM
+- Create a simple blog at /blog powered by Markdown files:
+  - Store blog posts as .md files in /content/blog/ with frontmatter (title, description, date, author, tags, image).
+  - Parse with `gray-matter` and render with `react-markdown` + `remark-gfm`.
+  - Blog index page with cards, tag filtering, and pagination.
+  - Individual post pages with table of contents, reading time estimate, and "Share" buttons.
+  - Initial blog posts (create the markdown files with placeholder content):
+    1. "Getting Started with Web Scraping in 2025"
+    2. "HTTP vs Browser-Based Scraping: When to Use Each"
+    3. "Building a Data Pipeline with ScraperCloud API"
+    4. "Web Scraping Best Practices and Ethics"
+    5. "How to Monitor Website Changes Automatically"
+
+9.3 — ANALYTICS
+- Add a lightweight analytics solution:
+  - Self-hosted: implement a simple page view tracker (POST /api/analytics/pageview from the frontend) storing views in PostgreSQL. Show in admin dashboard.
+  - Or: add Plausible/Umami analytics script tag (privacy-friendly, GDPR-compliant).
+- Add UTM parameter tracking for marketing campaigns.
+
+====================================================================
+PHASE 10: TESTING & CI/CD
+====================================================================
+
+10.1 — BACKEND TESTS
+- Set up Vitest for the backend.
+- Write tests for:
+  - Auth: registration validation, login, session creation, API key auth.
+  - Jobs: creation, quota enforcement, priority queuing, job processing.
+  - Subscription: plan upgrade, quota reset, usage tracking.
+  - Scraper: URL validation, response parsing, timeout handling, non-HTML handling.
+  - Admin: access control, user management.
+- Use a test PostgreSQL database (in-memory via `pg-mem` or a test container).
+- Use the in-memory Redis fallback for tests.
+- Aim for >80% code coverage.
+
+10.2 — FRONTEND TESTS
+- Set up Vitest + React Testing Library for frontend.
+- Write tests for:
+  - Authentication forms (validation, submission, error handling).
+  - Dashboard data display.
+  - Job creation form.
+  - Pricing page plan selection.
+  - Theme toggle.
+  - Responsive layout (using resize observer mocks).
+
+10.3 — E2E TESTS
+- Set up Playwright for E2E tests.
+- Write tests for critical user flows:
+  - Registration → Login → Create Job → View Result → Logout.
+  - API key creation → Use API key to create job via API.
+  - Admin login → View users → Change user plan.
+- Configure to run against a local dev environment.
+
+10.4 — CI/CD PIPELINE
+- Create GitHub Actions workflow (.github/workflows/ci.yml):
+  - On push to main and on PRs:
+    - Install dependencies
+    - Run linting (add ESLint + Prettier config if not present)
+    - Run backend tests
+    - Run frontend tests
+    - Build frontend and backend
+    - Run E2E tests (on PRs only, or nightly)
+  - On push to main (after tests pass):
+    - Deploy backend to Railway (via Railway CLI or webhook)
+    - Deploy frontend to Vercel (Vercel handles this via GitHub integration, but add a check that tests pass first)
+
+====================================================================
+IMPLEMENTATION ORDER & PRIORITIES
+====================================================================
+
+Execute in this order for maximum value with minimum risk:
+
+IMMEDIATE (Week 1-2):
+1. Phase 1 (Security) — All items
+2. Phase 4.1-4.3 (UI basics: theme, landing page, dashboard)
+3. Phase 6.3 (Health check)
+
+SHORT-TERM (Week 3-4):
+4. Phase 2 (Stripe payments)
+5. Phase 4.4-4.7 (remaining UI)
+6. Phase 5.1-5.2 (API docs)
+
+MEDIUM-TERM (Week 5-8):
+7. Phase 3 (JS rendering)
+8. Phase 5.3 (Webhooks)
+9. Phase 7 (Admin panel)
+10. Phase 8.1-8.2 (Batch + Scheduled scraping)
+11. Phase 10 (Testing)
+
+LONG-TERM (Week 9-12):
+12. Phase 8.3-8.6 (Diffing, Export, Settings, Email)
+13. Phase 9 (SEO & Blog)
+14. Phase 6.1-6.4 (Performance & Monitoring)
+
+====================================================================
+GENERAL GUIDELINES
+====================================================================
+
+- Keep all shared types and schemas in shared/schema.ts.
+- Use Drizzle migrations for ALL database changes (no more push --force).
+- All new API endpoints must have Zod request validation.
+- All new features must respect plan-based limits.
+- Use TypeScript strict mode — no `any` types.
+- Follow existing code patterns (ESM, barrel exports, etc).
+- Every new page needs: loading state, error state, empty state.
+- All user-facing text should be in English, but structure the code so i18n is easy to add later (no hardcoded strings in JSX — use a constants file or i18n library).
+- Mobile-first responsive design for all new UI.
+- Ensure all new environment variables are documented in a .env.example file with comments.
+- Add JSDoc comments to all new exported functions and types.
+How to Use This Prompt
+Step 1: Copy the entire prompt block above.
+
+Step 2: Open your project in Replit and activate the AI Coding Agent.
+
+Step 3: Paste the prompt. If Replit has a character limit, break it into phases. Feed Phase 1 first, wait for completion, then Phase 2, and so on.
+
+Step 4: After each phase, test thoroughly before moving to the next.
+
+Step 5: For environment variables (Stripe keys, Sentry DSN, etc.), set them up in Railway/Vercel as each phase requires them.
