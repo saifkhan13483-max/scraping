@@ -281,7 +281,7 @@ export default function AuthPage() {
     },
     onSuccess: (user) => {
       queryClient.setQueryData(["/api/auth/me"], user);
-      setLocation("/dashboard");
+      setLocation(user.isAdmin ? "/admin" : "/dashboard");
     },
     onError: (err) => {
       toast({ title: parseApiError(err, "Login failed"), variant: "destructive" });
@@ -297,7 +297,7 @@ export default function AuthPage() {
     },
     onSuccess: (user) => {
       queryClient.setQueryData(["/api/auth/me"], user);
-      setLocation("/dashboard");
+      setLocation(user.isAdmin ? "/admin" : "/dashboard");
     },
     onError: (err) => {
       toast({ title: parseApiError(err, "Registration failed"), variant: "destructive" });

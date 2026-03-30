@@ -62,7 +62,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const user = await storage.createUser(parsed);
       req.session!.userId = user.id;
       req.resolvedUserId = user.id;
-      return res.status(201).json({ id: user.id, email: user.email, name: user.name });
+      return res.status(201).json({ id: user.id, email: user.email, name: user.name, isAdmin: user.isAdmin ?? false });
     } catch (err) {
       if (err instanceof ZodError) {
         return res.status(400).json({ error: err.errors[0].message });
@@ -80,7 +80,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!valid) return res.status(401).json({ error: "Invalid email or password" });
       req.session!.userId = user.id;
       req.resolvedUserId = user.id;
-      return res.json({ id: user.id, email: user.email, name: user.name });
+      return res.json({ id: user.id, email: user.email, name: user.name, isAdmin: user.isAdmin ?? false });
     } catch (err) {
       if (err instanceof ZodError) {
         return res.status(400).json({ error: err.errors[0].message });
