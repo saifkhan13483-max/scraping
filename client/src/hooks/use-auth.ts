@@ -4,13 +4,21 @@ import { useLocation } from "wouter";
 import type { Subscription } from "@shared/schema";
 
 const rawApiUrl = (import.meta.env.VITE_API_URL as string | undefined) ?? "";
-const API_BASE = rawApiUrl.replace(/\/+$/, "");
+let API_BASE = "";
+if (rawApiUrl) {
+  try {
+    API_BASE = new URL(rawApiUrl).origin;
+  } catch {
+    API_BASE = rawApiUrl.replace(/\/+$/, "").replace(/\/api.*$/, "");
+  }
+}
 
 export type AuthUser = {
   id: number;
   email: string;
   name: string;
   isAdmin?: boolean;
+  createdAt?: string;
   subscription?: Subscription;
 };
 

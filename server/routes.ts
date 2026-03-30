@@ -6,6 +6,11 @@ import { insertJobSchema, submitResultSchema, failJobSchema, retryJobSchema, ins
 import { ZodError, z } from "zod";
 import { requireAuth, requireAdmin, resolveUser } from "./auth";
 import rateLimit from "express-rate-limit";
+import { randomBytes } from "crypto";
+
+// One-time secret generated at startup to protect the internal process endpoint.
+// Only requests that include this token (sent by this server itself) are allowed.
+const INTERNAL_PROCESS_SECRET = randomBytes(32).toString("hex");
 
 // ─── Rate limiters ─────────────────────────────────────────────────────────────
 
@@ -38,8 +43,8 @@ const jobLimiter = rateLimit({
 
 function isValidUrl(url: string): boolean {
   try {
-    new URL(url);
-    return true;
+    const parsed = new URL(url);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
   } catch {
     return false;
   }
@@ -175,7 +180,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       // Fire-and-forget: trigger server-side processing so jobs run without an external worker.
       const host = req.get("host") || "localhost:5000";
       const protocol = req.secure || req.headers["x-forwarded-proto"] === "https" ? "https" : "http";
-      fetch(`${protocol}://${host}/api/jobs/process`, { method: "POST" }).catch((e) =>
+      fetch(`${protocol}://${host}/api/jobs/process`, {
+        method: "POST",
+        headers: { "x-internal-secret": INTERNAL_PROCESS_SECRET },
+      }).catch((e) =>
         console.warn("[AUTO-PROCESS] Could not trigger processing:", e.message)
       );
 
@@ -196,7 +204,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // Server-side job processor — picks up one pending job and scrapes it in-process.
-  app.post("/api/jobs/process", async (_req: Request, res: Response) => {
+  // Protected by a startup-generated secret so only this server can trigger processing.
+  app.post("/api/jobs/process", async (req: Request, res: Response) => {
+    const secret = req.headers["x-internal-secret"];
+    if (secret !== INTERNAL_PROCESS_SECRET) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
     const job = await storage.getNextPendingJob();
     if (!job) return res.status(204).send();
 
@@ -274,7 +287,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       // Fire-and-forget: trigger server-side processing for the retried job
       const host = req.get("host") || "localhost:5000";
       const protocol = req.secure || req.headers["x-forwarded-proto"] === "https" ? "https" : "http";
-      fetch(`${protocol}://${host}/api/jobs/process`, { method: "POST" }).catch((e) =>
+      fetch(`${protocol}://${host}/api/jobs/process`, {
+        method: "POST",
+        headers: { "x-internal-secret": INTERNAL_PROCESS_SECRET },
+      }).catch((e) =>
         console.warn("[AUTO-PROCESS] Could not trigger retry processing:", e.message)
       );
 

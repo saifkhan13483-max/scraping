@@ -129,6 +129,11 @@ client/
 - **Performance — font loading**: `client/index.html` was loading 30+ Google Font families in a single enormous request. Trimmed to only the two fonts actually used: `Inter` and `JetBrains Mono`.
 - **SEO**: Added `<title>`, `<meta name="description">`, Open Graph (`og:*`), and Twitter Card tags to `client/index.html`.
 - **Scraper timeout message**: Timeout now throws `"Request timed out after 25 seconds"` (previously the cryptic `AbortError` message `"This operation was aborted"` was surfaced to users).
+- **`use-auth.ts` API_BASE bug fixed**: Was using `rawApiUrl.replace(/\/+$/, "")` which would incorrectly append path suffixes to API calls if `VITE_API_URL` was set to a URL with a path (e.g. the Railway health check URL). Now uses the same origin-extraction logic as `queryClient.ts` so auth always works in split deployments.
+- **`AuthUser` type fixed**: Added `createdAt?: string` field which is returned by the API but was missing from the type, causing a TypeScript error in `admin.tsx` at line 231.
+- **`isValidUrl` security hardened**: Previously accepted any syntactically valid URL (including `file://`, `javascript:` etc.). Now explicitly requires `http:` or `https:` protocol, preventing SSRF attempts against local file system and other non-web resources.
+- **`POST /api/jobs/process` internal endpoint protected**: The fire-and-forget processing endpoint was open to the public internet, allowing anyone to spam it. Now requires an `x-internal-secret` header that is generated at server startup and only known to the server itself.
+- **`railway.toml` db:push flag**: Changed `npm run db:push` to `npx drizzle-kit push --force` to prevent Railway deployments from hanging waiting for interactive confirmation on schema changes.
 
 ## Security Notes
 
