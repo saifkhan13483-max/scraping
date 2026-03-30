@@ -14,6 +14,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
 import AppLayout from "@/components/app-layout";
@@ -22,9 +23,10 @@ import {
   Globe, Clock, CheckCircle2, XCircle, Loader2, RefreshCw, Trash2, Plus,
   Terminal, AlertCircle, Copy, Zap, ArrowUpRight, Send, ListFilter,
   RotateCcw, Inbox, TrendingUp, Search, X, Download, CheckCheck,
-  Activity, BarChart3, Timer, ChevronDown, ChevronUp,
+  Activity, BarChart3, Timer, ChevronDown, ChevronUp, SortAsc, SortDesc,
+  FileDown, Layers, CalendarDays, ArrowDownUp, SkipForward,
 } from "lucide-react";
-import { formatDistanceToNow, format } from "date-fns";
+import { formatDistanceToNow, format, isToday, startOfDay, subDays } from "date-fns";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -147,7 +149,7 @@ function StatCard({
 
 // ─── Summary Card ─────────────────────────────────────────────────────────────
 
-function SummaryCard({ total, successRate }: { total: number; successRate: number }) {
+function SummaryCard({ total, successRate, todayCount }: { total: number; successRate: number; todayCount: number }) {
   return (
     <div className="bg-card border border-border/60 rounded-2xl p-4 flex flex-col gap-3">
       <div className="flex items-center justify-between">
@@ -168,6 +170,12 @@ function SummaryCard({ total, successRate }: { total: number; successRate: numbe
           style={{ width: `${successRate}%` }}
         />
       </div>
+      {todayCount > 0 && (
+        <div className="flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400 font-medium -mt-1">
+          <CalendarDays className="w-3 h-3" />
+          {todayCount} submitted today
+        </div>
+      )}
     </div>
   );
 }
@@ -186,6 +194,115 @@ function StatSkeleton() {
         <Skeleton className="h-3 w-24 rounded" />
       </div>
       <Skeleton className="h-1.5 w-full rounded-full" />
+    </div>
+  );
+}
+
+// ─── Activity Chart ───────────────────────────────────────────────────────────
+
+function ActivityChart({ jobs, isLoading }: { jobs: Job[]; isLoading: boolean }) {
+  const days = Array.from({ length: 7 }, (_, i) => subDays(new Date(), 6 - i));
+
+  const dayCounts = days.map((day) => {
+    const dayStart = startOfDay(day);
+    const dayEnd = new Date(dayStart.getTime() + 86400000);
+    const completed = jobs.filter((j) => {
+      const t = new Date(j.createdAt).getTime();
+      return t >= dayStart.getTime() && t < dayEnd.getTime() && j.status === "completed";
+    }).length;
+    const failed = jobs.filter((j) => {
+      const t = new Date(j.createdAt).getTime();
+      return t >= dayStart.getTime() && t < dayEnd.getTime() && j.status === "failed";
+    }).length;
+    const pending = jobs.filter((j) => {
+      const t = new Date(j.createdAt).getTime();
+      return t >= dayStart.getTime() && t < dayEnd.getTime() && (j.status === "pending" || j.status === "processing");
+    }).length;
+    return { day, completed, failed, pending, total: completed + failed + pending };
+  });
+
+  const maxTotal = Math.max(...dayCounts.map((d) => d.total), 1);
+
+  if (isLoading) {
+    return (
+      <div className="bg-card border border-border/60 rounded-2xl p-4 sm:p-5">
+        <div className="flex items-center justify-between mb-4">
+          <Skeleton className="h-4 w-24 rounded" />
+          <Skeleton className="h-3 w-20 rounded" />
+        </div>
+        <div className="flex items-end gap-1.5 h-20">
+          {Array.from({ length: 7 }).map((_, i) => (
+            <div key={i} className="flex-1 flex flex-col items-center gap-2">
+              <Skeleton className="w-full rounded" style={{ height: `${Math.random() * 60 + 20}%` }} />
+              <Skeleton className="h-2.5 w-6 rounded" />
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-card border border-border/60 rounded-2xl p-4 sm:p-5">
+      <div className="flex items-center justify-between mb-1">
+        <div className="flex items-center gap-2">
+          <div className="w-7 h-7 rounded-lg bg-primary/10 flex items-center justify-center">
+            <Activity className="w-3.5 h-3.5 text-primary" />
+          </div>
+          <h2 className="text-sm font-semibold">Job Activity</h2>
+        </div>
+        <span className="text-xs text-muted-foreground">Last 7 days</span>
+      </div>
+      <div className="flex items-center gap-3 mb-4 mt-2">
+        <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+          <span className="w-2 h-2 rounded-sm bg-emerald-500" />Completed
+        </div>
+        <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+          <span className="w-2 h-2 rounded-sm bg-red-500" />Failed
+        </div>
+        <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+          <span className="w-2 h-2 rounded-sm bg-amber-500" />Pending
+        </div>
+      </div>
+      <div className="flex items-end gap-1 sm:gap-1.5 h-20">
+        {dayCounts.map(({ day, completed, failed, pending, total }, i) => {
+          const isToday_ = isToday(day);
+          const completedH = total > 0 ? (completed / maxTotal) * 100 : 0;
+          const failedH = total > 0 ? (failed / maxTotal) * 100 : 0;
+          const pendingH = total > 0 ? (pending / maxTotal) * 100 : 0;
+          return (
+            <div key={i} className="flex-1 flex flex-col items-center gap-1 group">
+              <div className="relative w-full" title={`${format(day, "MMM d")}: ${total} jobs (${completed} completed, ${failed} failed, ${pending} pending)`}>
+                <div className="w-full flex flex-col-reverse rounded overflow-hidden" style={{ height: "64px" }}>
+                  {total === 0 ? (
+                    <div className="w-full rounded bg-muted/60" style={{ height: "4px" }} />
+                  ) : (
+                    <>
+                      {pendingH > 0 && (
+                        <div className="w-full bg-amber-500/70 transition-all duration-500" style={{ height: `${pendingH}%` }} />
+                      )}
+                      {failedH > 0 && (
+                        <div className="w-full bg-red-500/70 transition-all duration-500" style={{ height: `${failedH}%` }} />
+                      )}
+                      {completedH > 0 && (
+                        <div className="w-full bg-emerald-500/70 transition-all duration-500" style={{ height: `${completedH}%` }} />
+                      )}
+                    </>
+                  )}
+                </div>
+                {total > 0 && (
+                  <div className="absolute -top-5 left-1/2 -translate-x-1/2 opacity-0 group-hover:opacity-100 transition-opacity bg-popover border border-border rounded px-1.5 py-0.5 text-[10px] font-medium whitespace-nowrap shadow-sm pointer-events-none z-10">
+                    {total} job{total !== 1 ? "s" : ""}
+                  </div>
+                )}
+              </div>
+              <span className={`text-[10px] font-medium ${isToday_ ? "text-primary" : "text-muted-foreground/60"}`}>
+                {isToday_ ? "Today" : format(day, "EEE")}
+              </span>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -299,7 +416,7 @@ function JobRow({ job, onSelect }: { job: Job; onSelect: (j: Job) => void }) {
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 flex-wrap">
           <span
-            className="text-sm font-medium text-foreground truncate max-w-[140px] xs:max-w-[200px] sm:max-w-xs md:max-w-sm"
+            className="text-sm font-medium text-foreground truncate max-w-[130px] xs:max-w-[180px] sm:max-w-xs md:max-w-sm"
             data-testid={`text-url-${job.id}`}
           >
             {job.url}
@@ -441,10 +558,16 @@ function JobDetailPanel({
     toast({ title: "Result downloaded" });
   };
 
+  const durationMs =
+    job.status === "completed" || job.status === "failed"
+      ? new Date(job.updatedAt).getTime() - new Date(job.createdAt).getTime()
+      : null;
+
   const content = (
     <div className="flex flex-col gap-5 pt-2 pb-4">
       <div className="flex items-center gap-2 flex-wrap">
         <StatusBadge status={job.status as JobStatus} />
+        <PriorityBadge priority={job.priority} />
         {parseInt(job.retryCount) > 0 && (
           <span className="text-xs bg-muted text-muted-foreground px-2 py-0.5 rounded-full font-medium">
             {job.retryCount} {parseInt(job.retryCount) === 1 ? "retry" : "retries"}
@@ -495,6 +618,20 @@ function JobDetailPanel({
         <DetailRow label="Priority">
           <span className="text-sm text-muted-foreground capitalize">{job.priority ?? "normal"}</span>
         </DetailRow>
+        {durationMs !== null && (
+          <>
+            <div className="border-t border-border/40" />
+            <DetailRow label="Duration">
+              <span className="text-sm text-muted-foreground">
+                {durationMs < 1000
+                  ? `${durationMs}ms`
+                  : durationMs < 60000
+                    ? `${(durationMs / 1000).toFixed(1)}s`
+                    : `${Math.floor(durationMs / 60000)}m ${Math.floor((durationMs % 60000) / 1000)}s`}
+              </span>
+            </DetailRow>
+          </>
+        )}
         {job.workerId && (
           <>
             <div className="border-t border-border/40" />
@@ -639,6 +776,38 @@ const FILTERS: { label: string; value: "all" | JobStatus }[] = [
   { label: "Failed", value: "failed" },
 ];
 
+// ─── Sort Options ─────────────────────────────────────────────────────────────
+
+type SortOption = "newest" | "oldest" | "priority" | "status";
+
+const SORT_OPTIONS: { label: string; value: SortOption }[] = [
+  { label: "Newest first", value: "newest" },
+  { label: "Oldest first", value: "oldest" },
+  { label: "Priority", value: "priority" },
+  { label: "Status", value: "status" },
+];
+
+const PRIORITY_ORDER = { high: 0, normal: 1, low: 2 };
+const STATUS_ORDER: Record<JobStatus, number> = { processing: 0, pending: 1, failed: 2, completed: 3 };
+
+function sortJobs(jobs: Job[], sort: SortOption): Job[] {
+  return [...jobs].sort((a, b) => {
+    if (sort === "newest") return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+    if (sort === "oldest") return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+    if (sort === "priority") {
+      const pa = PRIORITY_ORDER[a.priority as keyof typeof PRIORITY_ORDER] ?? 1;
+      const pb = PRIORITY_ORDER[b.priority as keyof typeof PRIORITY_ORDER] ?? 1;
+      return pa !== pb ? pa - pb : new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+    }
+    if (sort === "status") {
+      const sa = STATUS_ORDER[a.status as JobStatus] ?? 99;
+      const sb = STATUS_ORDER[b.status as JobStatus] ?? 99;
+      return sa !== sb ? sa - sb : new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+    }
+    return 0;
+  });
+}
+
 // ─── Dashboard ────────────────────────────────────────────────────────────────
 
 export default function Dashboard() {
@@ -646,8 +815,13 @@ export default function Dashboard() {
   const { user } = useAuth();
   const [filter, setFilter] = useState<"all" | JobStatus>("all");
   const [search, setSearch] = useState("");
+  const [sort, setSort] = useState<SortOption>("newest");
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [batchMode, setBatchMode] = useState(false);
+  const [batchUrls, setBatchUrls] = useState("");
+  const [batchPriority, setBatchPriority] = useState<"high" | "normal" | "low">("normal");
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   const { data: jobs = [], isLoading, isFetching, refetch } = useQuery<Job[]>({
@@ -662,13 +836,12 @@ export default function Dashboard() {
     refetchInterval: 10000,
   });
 
-  const [showAdvanced, setShowAdvanced] = useState(false);
-
   const form = useForm<InsertJob>({
     resolver: zodResolver(insertJobSchema),
     defaultValues: { url: "", priority: "normal", delay: undefined },
   });
 
+  // Single URL submit
   const createMutation = useMutation({
     mutationFn: (data: InsertJob) => apiRequest("POST", "/api/job", data),
     onSuccess: () => {
@@ -689,6 +862,46 @@ export default function Dashboard() {
     },
   });
 
+  // Batch URL submit
+  const [batchPending, setBatchPending] = useState(false);
+  const handleBatchSubmit = async () => {
+    const urls = batchUrls
+      .split("\n")
+      .map((u) => u.trim())
+      .filter((u) => u.length > 0);
+
+    if (urls.length === 0) {
+      toast({ title: "No URLs entered", variant: "destructive" });
+      return;
+    }
+    if (urls.length > 20) {
+      toast({ title: "Max 20 URLs per batch", variant: "destructive" });
+      return;
+    }
+    const invalid = urls.filter((u) => { try { new URL(u); return false; } catch { return true; } });
+    if (invalid.length > 0) {
+      toast({ title: `${invalid.length} invalid URL${invalid.length > 1 ? "s" : ""}`, description: invalid[0], variant: "destructive" });
+      return;
+    }
+
+    setBatchPending(true);
+    const results = await Promise.allSettled(
+      urls.map((url) => apiRequest("POST", "/api/job", { url, priority: batchPriority }))
+    );
+    const succeeded = results.filter((r) => r.status === "fulfilled").length;
+    const failed = results.length - succeeded;
+    setBatchPending(false);
+    queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/subscription"] });
+    setBatchUrls("");
+    if (succeeded > 0) {
+      toast({ title: `${succeeded} job${succeeded !== 1 ? "s" : ""} submitted${failed > 0 ? `, ${failed} failed` : ""}` });
+    } else {
+      toast({ title: "All submissions failed", variant: "destructive" });
+    }
+  };
+
+  // Clear completed
   const clearCompletedMutation = useMutation({
     mutationFn: async () => {
       const completed = jobs.filter((j) => j.status === "completed");
@@ -714,6 +927,51 @@ export default function Dashboard() {
     },
   });
 
+  // Retry all failed
+  const [retryAllPending, setRetryAllPending] = useState(false);
+  const handleRetryAllFailed = async () => {
+    const failed = jobs.filter((j) => j.status === "failed");
+    if (failed.length === 0) return;
+    setRetryAllPending(true);
+    const results = await Promise.allSettled(
+      failed.map((j) => apiRequest("POST", "/api/retry", { id: j.id }))
+    );
+    const succeeded = results.filter((r) => r.status === "fulfilled").length;
+    setRetryAllPending(false);
+    queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+    toast({ title: `${succeeded} job${succeeded !== 1 ? "s" : ""} queued for retry` });
+  };
+
+  // Export CSV
+  const handleExportCsv = () => {
+    if (filtered.length === 0) {
+      toast({ title: "No jobs to export", variant: "destructive" });
+      return;
+    }
+    const header = ["id", "url", "status", "priority", "retryCount", "workerId", "createdAt", "updatedAt", "error"];
+    const rows = filtered.map((j) => [
+      j.id,
+      j.url,
+      j.status,
+      j.priority ?? "normal",
+      j.retryCount ?? "0",
+      j.workerId ?? "",
+      j.createdAt ? format(new Date(j.createdAt), "yyyy-MM-dd HH:mm:ss") : "",
+      j.updatedAt ? format(new Date(j.updatedAt), "yyyy-MM-dd HH:mm:ss") : "",
+      (j.error ?? "").replace(/"/g, '""'),
+    ]);
+    const csv = [header, ...rows].map((r) => r.map((v) => `"${v}"`).join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `jobs-${format(new Date(), "yyyy-MM-dd")}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast({ title: `Exported ${filtered.length} jobs as CSV` });
+  };
+
+  // Stats
   const stats = {
     total: jobs.length,
     pending: jobs.filter((j) => j.status === "pending").length,
@@ -722,13 +980,16 @@ export default function Dashboard() {
     failed: jobs.filter((j) => j.status === "failed").length,
   };
 
-  const successRate = stats.total > 0
-    ? Math.round((stats.completed / stats.total) * 100)
-    : 0;
+  const todayCount = jobs.filter((j) => isToday(new Date(j.createdAt))).length;
+  const successRate = stats.total > 0 ? Math.round((stats.completed / stats.total) * 100) : 0;
 
-  const filtered = jobs
-    .filter((j) => filter === "all" || j.status === filter)
-    .filter((j) => !search || j.url.toLowerCase().includes(search.toLowerCase()) || j.id.toLowerCase().includes(search.toLowerCase()));
+  // Filtering + sorting
+  const filtered = sortJobs(
+    jobs
+      .filter((j) => filter === "all" || j.status === filter)
+      .filter((j) => !search || j.url.toLowerCase().includes(search.toLowerCase()) || j.id.toLowerCase().includes(search.toLowerCase())),
+    sort
+  );
 
   const filterCount: Record<string, number> = {
     all: jobs.filter((j) => !search || j.url.toLowerCase().includes(search.toLowerCase()) || j.id.toLowerCase().includes(search.toLowerCase())).length,
@@ -738,8 +999,6 @@ export default function Dashboard() {
     failed: jobs.filter((j) => j.status === "failed" && (!search || j.url.toLowerCase().includes(search.toLowerCase()))).length,
   };
 
-  // Always derive the displayed job from the live jobs list so the detail panel
-  // reflects updates from the 3-second polling interval automatically.
   const selectedJob = selectedJobId ? (jobs.find((j) => j.id === selectedJobId) ?? null) : null;
 
   const handleOpenDetail = (job: Job) => {
@@ -757,18 +1016,20 @@ export default function Dashboard() {
   }, []);
 
   const hasCompletedJobs = stats.completed > 0;
+  const hasFailedJobs = stats.failed > 0;
   const hasActiveFilter = filter !== "all" || search !== "";
 
   return (
     <AppLayout>
-      <div className="w-full max-w-5xl mx-auto px-4 sm:px-6 py-5 sm:py-7 space-y-5 sm:space-y-6">
+      <div className="w-full max-w-5xl mx-auto px-4 sm:px-6 py-5 sm:py-7 space-y-4 sm:space-y-5">
 
         {/* ── Header ─────────────────────────────────────────── */}
         <div className="flex items-start sm:items-center justify-between gap-3">
           <div>
             <h1 className="text-xl sm:text-2xl font-bold text-foreground leading-none">Dashboard</h1>
             <p className="text-muted-foreground text-sm mt-1">
-              Welcome back{user ? `, ${user.name.split(" ")[0]}` : ""}! Here's what's happening.
+              Welcome back{user ? `, ${user.name.split(" ")[0]}` : ""}!
+              {todayCount > 0 ? ` You've run ${todayCount} job${todayCount !== 1 ? "s" : ""} today.` : " Here's what's happening."}
             </p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
@@ -795,7 +1056,7 @@ export default function Dashboard() {
         {sub && <QuotaBanner sub={sub} />}
 
         {/* ── Stats ─────────────────────────────────────────── */}
-        <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
           {isLoading ? (
             <>
               <StatSkeleton />
@@ -806,7 +1067,9 @@ export default function Dashboard() {
             </>
           ) : (
             <>
-              <SummaryCard total={stats.total} successRate={successRate} />
+              <div className="col-span-2 sm:col-span-1">
+                <SummaryCard total={stats.total} successRate={successRate} todayCount={todayCount} />
+              </div>
               <StatCard
                 label="Pending" value={stats.pending} total={stats.total}
                 icon={Clock} colorClass="text-amber-500" bgClass="bg-amber-500/10" barClass="bg-amber-500"
@@ -835,123 +1098,109 @@ export default function Dashboard() {
           )}
         </div>
 
+        {/* ── Activity Chart ─────────────────────────────────── */}
+        <ActivityChart jobs={jobs} isLoading={isLoading} />
+
         {/* ── Submit Form ────────────────────────────────────── */}
         <div className="bg-card border border-border/60 rounded-2xl p-4 sm:p-5">
-          <div className="flex items-center justify-between gap-2 mb-3">
+          <div className="flex items-center justify-between gap-2 mb-4">
             <div className="flex items-center gap-2">
               <div className="w-7 h-7 rounded-lg bg-primary/10 flex items-center justify-center">
                 <Send className="w-3.5 h-3.5 text-primary" />
               </div>
-              <h2 className="text-sm font-semibold">Submit a Scraping Job</h2>
+              <h2 className="text-sm font-semibold">Submit Scraping Job{batchMode ? "s" : ""}</h2>
             </div>
-            <button
-              type="button"
-              onClick={() => setShowAdvanced((v) => !v)}
-              className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1 transition-colors"
-              data-testid="button-toggle-advanced"
-            >
-              {showAdvanced ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-              Options
-            </button>
-          </div>
-          <Form {...form}>
-            <form
-              onSubmit={form.handleSubmit((data) => createMutation.mutate(data))}
-              className="space-y-2"
-            >
-              <div className="flex flex-col sm:flex-row gap-2">
-                <FormField
-                  control={form.control}
-                  name="url"
-                  render={({ field }) => (
-                    <FormItem className="flex-1">
-                      <FormControl>
-                        <div className="relative">
-                          <Globe className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                          <Input
-                            {...field}
-                            placeholder="https://example.com"
-                            className="pl-9 h-11 font-mono text-sm bg-background border-border/70 focus:border-primary transition-colors"
-                            data-testid="input-url"
-                          />
-                        </div>
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-                <Button
-                  type="submit"
-                  className="h-11 gap-2 px-5 shrink-0 font-semibold"
-                  disabled={createMutation.isPending}
-                  data-testid="button-submit-job"
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => { setBatchMode((v) => !v); setBatchUrls(""); form.reset(); }}
+                className={`flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-lg border transition-colors ${
+                  batchMode
+                    ? "bg-primary/10 text-primary border-primary/30"
+                    : "text-muted-foreground border-border/50 hover:text-foreground hover:bg-accent"
+                }`}
+                data-testid="button-toggle-batch"
+              >
+                <Layers className="w-3.5 h-3.5" />
+                Batch
+              </button>
+              {!batchMode && (
+                <button
+                  type="button"
+                  onClick={() => setShowAdvanced((v) => !v)}
+                  className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1 transition-colors"
+                  data-testid="button-toggle-advanced"
                 >
-                  {createMutation.isPending
-                    ? <Loader2 className="w-4 h-4 animate-spin" />
-                    : <><Plus className="w-4 h-4" />Submit</>
-                  }
+                  {showAdvanced ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                  Options
+                </button>
+              )}
+            </div>
+          </div>
+
+          {batchMode ? (
+            <div className="space-y-3">
+              <div>
+                <p className="text-xs text-muted-foreground mb-2">
+                  Enter up to 20 URLs, one per line. All will be submitted as separate jobs.
+                </p>
+                <Textarea
+                  value={batchUrls}
+                  onChange={(e) => setBatchUrls(e.target.value)}
+                  placeholder={"https://example.com\nhttps://another-site.com\nhttps://third-site.com"}
+                  className="min-h-[120px] font-mono text-sm resize-none bg-background border-border/70 focus:border-primary transition-colors"
+                  data-testid="textarea-batch-urls"
+                />
+                <p className="text-xs text-muted-foreground mt-1.5 tabular-nums">
+                  {batchUrls.split("\n").filter((u) => u.trim().length > 0).length} URL{batchUrls.split("\n").filter((u) => u.trim().length > 0).length !== 1 ? "s" : ""} detected
+                </p>
+              </div>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <Select value={batchPriority} onValueChange={(v) => setBatchPriority(v as typeof batchPriority)}>
+                  <SelectTrigger className="h-9 text-xs bg-background border-border/70 sm:w-48" data-testid="select-batch-priority">
+                    <div className="flex items-center gap-2">
+                      <Zap className="w-3.5 h-3.5 text-muted-foreground" />
+                      <SelectValue placeholder="Priority" />
+                    </div>
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="high"><div className="flex items-center gap-2"><span className="w-2 h-2 rounded-full bg-red-500" />High priority</div></SelectItem>
+                    <SelectItem value="normal"><div className="flex items-center gap-2"><span className="w-2 h-2 rounded-full bg-primary" />Normal priority</div></SelectItem>
+                    <SelectItem value="low"><div className="flex items-center gap-2"><span className="w-2 h-2 rounded-full bg-slate-400" />Low priority</div></SelectItem>
+                  </SelectContent>
+                </Select>
+                <Button
+                  onClick={handleBatchSubmit}
+                  disabled={batchPending || batchUrls.trim().length === 0}
+                  className="h-9 gap-2 flex-1 sm:flex-none font-semibold"
+                  data-testid="button-submit-batch"
+                >
+                  {batchPending
+                    ? <><Loader2 className="w-4 h-4 animate-spin" />Submitting…</>
+                    : <><SkipForward className="w-4 h-4" />Submit All</>}
                 </Button>
               </div>
-
-              {showAdvanced && (
-                <div className="flex flex-col sm:flex-row gap-2 pt-1">
+            </div>
+          ) : (
+            <Form {...form}>
+              <form
+                onSubmit={form.handleSubmit((data) => createMutation.mutate(data))}
+                className="space-y-2"
+              >
+                <div className="flex flex-col sm:flex-row gap-2">
                   <FormField
                     control={form.control}
-                    name="priority"
-                    render={({ field }) => (
-                      <FormItem className="flex-1">
-                        <FormControl>
-                          <Select value={field.value ?? "normal"} onValueChange={field.onChange}>
-                            <SelectTrigger className="h-9 text-xs bg-background border-border/70" data-testid="select-priority">
-                              <div className="flex items-center gap-2">
-                                <Zap className="w-3.5 h-3.5 text-muted-foreground" />
-                                <SelectValue placeholder="Priority" />
-                              </div>
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="high">
-                                <div className="flex items-center gap-2">
-                                  <span className="w-2 h-2 rounded-full bg-red-500" />
-                                  High priority
-                                </div>
-                              </SelectItem>
-                              <SelectItem value="normal">
-                                <div className="flex items-center gap-2">
-                                  <span className="w-2 h-2 rounded-full bg-primary" />
-                                  Normal priority
-                                </div>
-                              </SelectItem>
-                              <SelectItem value="low">
-                                <div className="flex items-center gap-2">
-                                  <span className="w-2 h-2 rounded-full bg-slate-400" />
-                                  Low priority
-                                </div>
-                              </SelectItem>
-                            </SelectContent>
-                          </Select>
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <FormField
-                    control={form.control}
-                    name="delay"
+                    name="url"
                     render={({ field }) => (
                       <FormItem className="flex-1">
                         <FormControl>
                           <div className="relative">
-                            <Timer className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+                            <Globe className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                             <Input
-                              type="number"
-                              min={0}
-                              max={3600000}
-                              step={1000}
-                              placeholder="Delay (ms) — optional"
-                              className="pl-9 h-9 text-xs bg-background border-border/70"
-                              data-testid="input-delay"
-                              value={field.value ?? ""}
-                              onChange={(e) => field.onChange(e.target.value ? parseInt(e.target.value) : undefined)}
+                              {...field}
+                              placeholder="https://example.com"
+                              className="pl-9 h-11 font-mono text-sm bg-background border-border/70 focus:border-primary transition-colors"
+                              data-testid="input-url"
                             />
                           </div>
                         </FormControl>
@@ -959,10 +1208,75 @@ export default function Dashboard() {
                       </FormItem>
                     )}
                   />
+                  <Button
+                    type="submit"
+                    className="h-11 gap-2 px-5 shrink-0 font-semibold"
+                    disabled={createMutation.isPending}
+                    data-testid="button-submit-job"
+                  >
+                    {createMutation.isPending
+                      ? <Loader2 className="w-4 h-4 animate-spin" />
+                      : <><Plus className="w-4 h-4" />Submit</>
+                    }
+                  </Button>
                 </div>
-              )}
-            </form>
-          </Form>
+
+                {showAdvanced && (
+                  <div className="flex flex-col sm:flex-row gap-2 pt-1">
+                    <FormField
+                      control={form.control}
+                      name="priority"
+                      render={({ field }) => (
+                        <FormItem className="flex-1">
+                          <FormControl>
+                            <Select value={field.value ?? "normal"} onValueChange={field.onChange}>
+                              <SelectTrigger className="h-9 text-xs bg-background border-border/70" data-testid="select-priority">
+                                <div className="flex items-center gap-2">
+                                  <Zap className="w-3.5 h-3.5 text-muted-foreground" />
+                                  <SelectValue placeholder="Priority" />
+                                </div>
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="high"><div className="flex items-center gap-2"><span className="w-2 h-2 rounded-full bg-red-500" />High priority</div></SelectItem>
+                                <SelectItem value="normal"><div className="flex items-center gap-2"><span className="w-2 h-2 rounded-full bg-primary" />Normal priority</div></SelectItem>
+                                <SelectItem value="low"><div className="flex items-center gap-2"><span className="w-2 h-2 rounded-full bg-slate-400" />Low priority</div></SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                    <FormField
+                      control={form.control}
+                      name="delay"
+                      render={({ field }) => (
+                        <FormItem className="flex-1">
+                          <FormControl>
+                            <div className="relative">
+                              <Timer className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+                              <Input
+                                type="number"
+                                min={0}
+                                max={3600000}
+                                step={1000}
+                                placeholder="Delay (ms) — optional"
+                                className="pl-9 h-9 text-xs bg-background border-border/70"
+                                data-testid="input-delay"
+                                value={field.value ?? ""}
+                                onChange={(e) => field.onChange(e.target.value ? parseInt(e.target.value) : undefined)}
+                              />
+                            </div>
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  </div>
+                )}
+              </form>
+            </Form>
+          )}
         </div>
 
         {/* ── Job List ───────────────────────────────────────── */}
@@ -970,7 +1284,7 @@ export default function Dashboard() {
 
           {/* List header */}
           <div className="px-4 sm:px-5 pt-4 pb-0">
-            <div className="flex items-center justify-between gap-2 mb-3">
+            <div className="flex items-center justify-between gap-2 mb-3 flex-wrap">
               <div className="flex items-center gap-2">
                 <div className="w-7 h-7 rounded-lg bg-primary/10 flex items-center justify-center">
                   <ListFilter className="w-3.5 h-3.5 text-primary" />
@@ -979,13 +1293,35 @@ export default function Dashboard() {
                 <span className="text-xs text-muted-foreground bg-muted rounded-full px-2 py-0.5 font-medium tabular-nums">
                   {filtered.length}
                 </span>
-              </div>
-              <div className="flex items-center gap-2">
                 {stats.processing > 0 && (
                   <div className="flex items-center gap-1.5 text-xs text-primary sm:hidden">
                     <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
                     {stats.processing} running
                   </div>
+                )}
+              </div>
+              <div className="flex items-center gap-1.5 flex-wrap">
+                {stats.processing > 0 && (
+                  <div className="hidden sm:flex items-center gap-1.5 text-xs text-primary mr-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
+                    {stats.processing} running
+                  </div>
+                )}
+                {hasFailedJobs && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 gap-1.5 text-xs border-red-500/30 text-red-600 dark:text-red-400 hover:bg-red-500/10 hidden sm:flex"
+                    disabled={retryAllPending}
+                    onClick={handleRetryAllFailed}
+                    data-testid="button-retry-all-failed"
+                  >
+                    {retryAllPending
+                      ? <Loader2 className="w-3 h-3 animate-spin" />
+                      : <RotateCcw className="w-3 h-3" />
+                    }
+                    Retry all failed
+                  </Button>
                 )}
                 {hasCompletedJobs && (
                   <Button
@@ -1000,33 +1336,65 @@ export default function Dashboard() {
                       ? <Loader2 className="w-3 h-3 animate-spin" />
                       : <CheckCheck className="w-3 h-3" />
                     }
-                    Clear completed
+                    Clear done
                   </Button>
                 )}
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 gap-1.5 text-xs"
+                  onClick={handleExportCsv}
+                  disabled={filtered.length === 0}
+                  data-testid="button-export-csv"
+                  title="Export visible jobs as CSV"
+                >
+                  <FileDown className="w-3 h-3" />
+                  <span className="hidden sm:inline">Export</span>
+                </Button>
               </div>
             </div>
 
-            {/* Search */}
-            <div className="relative mb-3">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
-              <input
-                ref={searchInputRef}
-                type="text"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search by URL or job ID…"
-                className="w-full pl-8 pr-8 py-2 text-sm rounded-lg bg-muted/50 border border-border/50 focus:outline-none focus:ring-1 focus:ring-primary/40 focus:border-primary/40 transition-all placeholder:text-muted-foreground/60"
-                data-testid="input-search-jobs"
-              />
-              {search && (
-                <button
-                  onClick={() => setSearch("")}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
-                  data-testid="button-clear-search"
-                >
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              )}
+            {/* Search + Sort row */}
+            <div className="flex gap-2 mb-3">
+              <div className="relative flex-1">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+                <input
+                  ref={searchInputRef}
+                  type="text"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search by URL or job ID…"
+                  className="w-full pl-8 pr-8 py-2 text-sm rounded-lg bg-muted/50 border border-border/50 focus:outline-none focus:ring-1 focus:ring-primary/40 focus:border-primary/40 transition-all placeholder:text-muted-foreground/60"
+                  data-testid="input-search-jobs"
+                />
+                {search && (
+                  <button
+                    onClick={() => setSearch("")}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                    data-testid="button-clear-search"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+              <Select value={sort} onValueChange={(v) => setSort(v as SortOption)}>
+                <SelectTrigger className="h-9 w-auto text-xs bg-muted/50 border-border/50 gap-1.5 pr-2 pl-3 shrink-0" data-testid="select-sort">
+                  <ArrowDownUp className="w-3 h-3 text-muted-foreground" />
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent align="end">
+                  {SORT_OPTIONS.map((o) => (
+                    <SelectItem key={o.value} value={o.value}>
+                      <div className="flex items-center gap-2">
+                        {o.value === "newest" || o.value === "oldest"
+                          ? <SortDesc className="w-3 h-3 text-muted-foreground" />
+                          : <SortAsc className="w-3 h-3 text-muted-foreground" />}
+                        {o.label}
+                      </div>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
 
             {/* Filter tabs — scrollable on mobile */}
@@ -1055,23 +1423,38 @@ export default function Dashboard() {
 
           <div className="border-t border-border/50" />
 
-          {/* Mobile clear completed */}
-          {hasCompletedJobs && (
-            <div className="sm:hidden px-4 py-2 border-b border-border/50">
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-7 gap-1.5 text-xs w-full"
-                disabled={clearCompletedMutation.isPending}
-                onClick={() => clearCompletedMutation.mutate()}
-                data-testid="button-clear-completed-mobile"
-              >
-                {clearCompletedMutation.isPending
-                  ? <Loader2 className="w-3 h-3 animate-spin" />
-                  : <CheckCheck className="w-3 h-3" />
-                }
-                Clear completed jobs
-              </Button>
+          {/* Mobile action bar */}
+          {(hasCompletedJobs || hasFailedJobs) && (
+            <div className="sm:hidden px-4 py-2 border-b border-border/50 flex gap-2">
+              {hasFailedJobs && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 gap-1.5 text-xs border-red-500/30 text-red-600 dark:text-red-400 hover:bg-red-500/10 flex-1"
+                  disabled={retryAllPending}
+                  onClick={handleRetryAllFailed}
+                  data-testid="button-retry-all-failed-mobile"
+                >
+                  {retryAllPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <RotateCcw className="w-3 h-3" />}
+                  Retry all failed
+                </Button>
+              )}
+              {hasCompletedJobs && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 gap-1.5 text-xs flex-1"
+                  disabled={clearCompletedMutation.isPending}
+                  onClick={() => clearCompletedMutation.mutate()}
+                  data-testid="button-clear-completed-mobile"
+                >
+                  {clearCompletedMutation.isPending
+                    ? <Loader2 className="w-3 h-3 animate-spin" />
+                    : <CheckCheck className="w-3 h-3" />
+                  }
+                  Clear done
+                </Button>
+              )}
             </div>
           )}
 
