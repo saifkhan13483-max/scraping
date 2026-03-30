@@ -4,7 +4,7 @@ import { storage } from "./storage";
 import { scrapeUrl } from "./scraper";
 import { insertJobSchema, submitResultSchema, failJobSchema, retryJobSchema, insertUserSchema, createApiKeySchema } from "@shared/schema";
 import { ZodError, z } from "zod";
-import { requireAuth, resolveUser } from "./auth";
+import { requireAuth, requireAdmin, resolveUser } from "./auth";
 import rateLimit from "express-rate-limit";
 
 // ─── Rate limiters ─────────────────────────────────────────────────────────────
@@ -98,7 +98,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const user = await storage.getUserById(userId);
     if (!user) return res.status(404).json({ error: "User not found" });
     const sub = await storage.getSubscription(user.id);
-    return res.json({ id: user.id, email: user.email, name: user.name, subscription: sub });
+    return res.json({ id: user.id, email: user.email, name: user.name, isAdmin: user.isAdmin, subscription: sub });
   });
 
   // ── Subscription Routes ─────────────────────────────────────────────────────
@@ -292,6 +292,85 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const job = await storage.getJobById(jobId);
     if (!job) return res.status(404).json({ error: "Job not found" });
     if (job.userId !== req.resolvedUserId) return res.status(403).json({ error: "Forbidden" });
+    const deleted = await storage.deleteJob(jobId);
+    if (!deleted) return res.status(404).json({ error: "Job not found" });
+    return res.json({ success: true });
+  });
+
+  // ── Admin Bootstrap (one-time setup) ────────────────────────────────────────
+  // Promotes the currently-logged-in user to admin if NO admin exists yet.
+
+  app.post("/api/admin/bootstrap", requireAuth, async (req: Request, res: Response) => {
+    const { db } = await import("./db");
+    const { users } = await import("@shared/schema");
+    const { eq } = await import("drizzle-orm");
+    const allUsers = await db.select().from(users);
+    const adminExists = allUsers.some((u) => u.isAdmin);
+    if (adminExists) {
+      return res.status(403).json({ error: "An admin already exists. Use the admin panel to promote others." });
+    }
+    const userId = req.resolvedUserId!;
+    const user = await storage.setUserAdmin(userId, true);
+    if (!user) return res.status(404).json({ error: "User not found" });
+    console.log(`[ADMIN BOOTSTRAP] User ${user.email} promoted to admin`);
+    return res.json({ success: true, message: `${user.email} is now an admin. Refresh the page.` });
+  });
+
+  // ── Admin Routes ────────────────────────────────────────────────────────────
+
+  app.get("/api/admin/stats", requireAdmin, async (_req: Request, res: Response) => {
+    const stats = await storage.getAdminStats();
+    return res.json(stats);
+  });
+
+  app.get("/api/admin/users", requireAdmin, async (_req: Request, res: Response) => {
+    const usersWithSubs = await storage.getAllUsers();
+    return res.json(usersWithSubs.map((u) => ({ ...u, passwordHash: undefined })));
+  });
+
+  app.patch("/api/admin/users/:id/plan", requireAdmin, async (req: Request, res: Response) => {
+    try {
+      const userId = parseInt(req.params.id as string);
+      if (isNaN(userId)) return res.status(400).json({ error: "Invalid user ID" });
+      const { plan } = z.object({ plan: z.enum(["free", "pro", "business"]) }).parse(req.body);
+      const sub = await storage.updatePlan(userId, plan);
+      if (!sub) return res.status(404).json({ error: "User not found" });
+      return res.json(sub);
+    } catch (err) {
+      if (err instanceof ZodError) return res.status(400).json({ error: err.errors[0].message });
+      throw err;
+    }
+  });
+
+  app.patch("/api/admin/users/:id/admin", requireAdmin, async (req: Request, res: Response) => {
+    try {
+      const userId = parseInt(req.params.id as string);
+      if (isNaN(userId)) return res.status(400).json({ error: "Invalid user ID" });
+      const { isAdmin } = z.object({ isAdmin: z.boolean() }).parse(req.body);
+      const user = await storage.setUserAdmin(userId, isAdmin);
+      if (!user) return res.status(404).json({ error: "User not found" });
+      return res.json({ id: user.id, isAdmin: user.isAdmin });
+    } catch (err) {
+      if (err instanceof ZodError) return res.status(400).json({ error: err.errors[0].message });
+      throw err;
+    }
+  });
+
+  app.delete("/api/admin/users/:id", requireAdmin, async (req: Request, res: Response) => {
+    const userId = parseInt(req.params.id as string);
+    if (isNaN(userId)) return res.status(400).json({ error: "Invalid user ID" });
+    const deleted = await storage.deleteUser(userId);
+    if (!deleted) return res.status(404).json({ error: "User not found" });
+    return res.json({ success: true });
+  });
+
+  app.get("/api/admin/jobs", requireAdmin, async (_req: Request, res: Response) => {
+    const jobs = await storage.getAllJobs();
+    return res.json(jobs);
+  });
+
+  app.delete("/api/admin/jobs/:id", requireAdmin, async (req: Request, res: Response) => {
+    const jobId = req.params.id as string;
     const deleted = await storage.deleteJob(jobId);
     if (!deleted) return res.status(404).json({ error: "Job not found" });
     return res.json({ success: true });

@@ -36,6 +36,17 @@ export interface IStorage {
   getApiKeys(userId: number): Promise<ApiKey[]>;
   createApiKey(userId: number, name: string): Promise<ApiKey>;
   deleteApiKey(userId: number, id: number): Promise<boolean>;
+
+  // Admin operations
+  getAllUsers(): Promise<(User & { subscription?: Subscription })[]>;
+  deleteUser(userId: number): Promise<boolean>;
+  setUserAdmin(userId: number, isAdmin: boolean): Promise<User | undefined>;
+  getAdminStats(): Promise<{
+    totalUsers: number;
+    planCounts: Record<string, number>;
+    totalJobs: number;
+    jobStatusCounts: Record<string, number>;
+  }>;
 }
 
 // ─────────────────────────────────────────────
@@ -408,6 +419,52 @@ export class AppStorage implements IStorage {
   async deleteApiKey(userId: number, id: number): Promise<boolean> {
     const result = await db.delete(apiKeys).where(and(eq(apiKeys.id, id), eq(apiKeys.userId, userId))).returning();
     return result.length > 0;
+  }
+
+  // ── Admin Operations ──────────────────────────
+
+  async getAllUsers(): Promise<(User & { subscription?: Subscription })[]> {
+    const allUsers = await db.select().from(users).orderBy(users.createdAt);
+    const allSubs = await db.select().from(subscriptions);
+    const subMap = new Map(allSubs.map((s) => [s.userId, s]));
+    return allUsers.map((u) => ({ ...u, subscription: subMap.get(u.id) }));
+  }
+
+  async deleteUser(userId: number): Promise<boolean> {
+    await db.delete(apiKeys).where(eq(apiKeys.userId, userId));
+    await db.delete(subscriptions).where(eq(subscriptions.userId, userId));
+    const result = await db.delete(users).where(eq(users.id, userId)).returning();
+    return result.length > 0;
+  }
+
+  async setUserAdmin(userId: number, isAdmin: boolean): Promise<User | undefined> {
+    const [updated] = await db.update(users).set({ isAdmin }).where(eq(users.id, userId)).returning();
+    return updated;
+  }
+
+  async getAdminStats(): Promise<{
+    totalUsers: number;
+    planCounts: Record<string, number>;
+    totalJobs: number;
+    jobStatusCounts: Record<string, number>;
+  }> {
+    const allUsers = await db.select().from(users);
+    const allSubs = await db.select().from(subscriptions);
+    const planCounts: Record<string, number> = { free: 0, pro: 0, business: 0 };
+    for (const sub of allSubs) {
+      planCounts[sub.plan] = (planCounts[sub.plan] ?? 0) + 1;
+    }
+    const allJobs = await this.getAllJobs();
+    const jobStatusCounts: Record<string, number> = { pending: 0, processing: 0, completed: 0, failed: 0 };
+    for (const job of allJobs) {
+      jobStatusCounts[job.status] = (jobStatusCounts[job.status] ?? 0) + 1;
+    }
+    return {
+      totalUsers: allUsers.length,
+      planCounts,
+      totalJobs: allJobs.length,
+      jobStatusCounts,
+    };
   }
 }
 

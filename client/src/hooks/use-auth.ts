@@ -10,6 +10,7 @@ export type AuthUser = {
   id: number;
   email: string;
   name: string;
+  isAdmin?: boolean;
   subscription?: Subscription;
 };
 

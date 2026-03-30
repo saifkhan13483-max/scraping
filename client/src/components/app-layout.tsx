@@ -1,7 +1,7 @@
 import { Link, useLocation } from "wouter";
 import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
-import { Zap, LayoutDashboard, CreditCard, Key, LogOut, ChevronRight, Menu, X } from "lucide-react";
+import { Zap, LayoutDashboard, CreditCard, Key, LogOut, ChevronRight, Menu, X, ShieldCheck } from "lucide-react";
 import { useState } from "react";
 import type { PlanType } from "@shared/schema";
 import { PLAN_CONFIG } from "@shared/schema";
@@ -74,6 +74,25 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               </Link>
             );
           })}
+          {user?.isAdmin && (
+            <Link href="/admin">
+              <span
+                onClick={() => setMobileOpen(false)}
+                data-testid="nav-admin"
+                className={`
+                  flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors w-full cursor-pointer mt-2
+                  ${location === "/admin"
+                    ? "bg-amber-500/15 text-amber-700 dark:text-amber-400"
+                    : "text-amber-600/70 dark:text-amber-500/70 hover:bg-amber-500/10 hover:text-amber-700 dark:hover:text-amber-400"
+                  }
+                `}
+              >
+                <ShieldCheck className="w-4 h-4 shrink-0" />
+                Admin Panel
+                {location === "/admin" && <ChevronRight className="w-3 h-3 ml-auto opacity-50" />}
+              </span>
+            </Link>
+          )}
         </nav>
 
         {/* User */}

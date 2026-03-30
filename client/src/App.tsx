@@ -9,6 +9,7 @@ import AuthPage from "@/pages/auth";
 import Dashboard from "@/pages/dashboard";
 import SubscriptionPage from "@/pages/subscription";
 import ApiKeysPage from "@/pages/api-keys";
+import AdminPage from "@/pages/admin";
 import { useAuth } from "@/hooks/use-auth";
 import { Loader2 } from "lucide-react";
 
@@ -44,6 +45,7 @@ function Router() {
       <Route path="/api-keys">
         {() => <ProtectedRoute component={ApiKeysPage} />}
       </Route>
+      <Route path="/admin" component={AdminPage} />
       <Route component={NotFound} />
     </Switch>
   );
